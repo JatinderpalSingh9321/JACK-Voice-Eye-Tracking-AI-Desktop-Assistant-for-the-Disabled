@@ -37,6 +37,8 @@ import threading
 import time
 import urllib.parse
 
+import pythoncom
+import win32com.client
 import speech_recognition as sr
 
 from src.utils import setup_logger, PROJECT_ROOT, DATA_DIR
@@ -50,8 +52,23 @@ logger = setup_logger("jim")
 # ──────────────────────────────────────────────
 
 def speak(text: str):
-    """Speak text using Windows SAPI5. Works reliably in any thread."""
+    """Speak text using Windows SAPI5. Uses direct COM with zero latency, falling back to PowerShell if needed."""
     logger.info(f"  [Jim]: \"{text}\"")
+    
+    # Try direct COM first for 0ms start latency
+    try:
+        try:
+            pythoncom.CoInitialize()
+        except Exception:
+            pass # Already initialized in this thread
+        
+        voice = win32com.client.Dispatch("SAPI.SpVoice")
+        voice.Speak(text)
+        return
+    except Exception as e:
+        logger.debug(f"Direct SAPI5 COM speech failed, falling back to PowerShell: {e}")
+
+    # Fallback to PowerShell subprocess
     safe = text.replace("'", "''")
     cmd = (
         f"powershell -Command \""
@@ -349,11 +366,30 @@ VOICE_COMMANDS = {
     "stop listening":      ("sleep", None, "Going to sleep. Say wake up Jim when you need me."),
     "go to sleep":         ("sleep", None, "Going to sleep. Say wake up Jim when you need me."),
     "sleep":               ("sleep", None, "Going to sleep. Say wake up Jim when you need me."),
+
+    # ── Dynamic Launchers ──
+    "launch blinking":        ("launch_blinking", None, "Launching EOG blink mechanism"),
+    "start blinking":         ("launch_blinking", None, "Launching EOG blink mechanism"),
+    "stop blinking":          ("stop_blinking", None, "Stopping EOG blink mechanism"),
+    "close blinking":         ("stop_blinking", None, "Stopping EOG blink mechanism"),
+    "stop eog":               ("stop_blinking", None, "Stopping EOG blink mechanism"),
+    "close eog":              ("stop_blinking", None, "Stopping EOG blink mechanism"),
+    "launch eye tracking":    ("launch_gaze", None, "Launching gaze tracking mechanism"),
+    "launch eye cursor":      ("launch_gaze", None, "Launching gaze tracking mechanism"),
+    "start eye tracking":     ("launch_gaze", None, "Launching gaze tracking mechanism"),
+    "start eye cursor":       ("launch_gaze", None, "Launching gaze tracking mechanism"),
+    "stop eye tracking":      ("stop_gaze", None, "Stopping gaze tracking mechanism"),
+    "stop eye cursor":        ("stop_gaze", None, "Stopping gaze tracking mechanism"),
+    "close eye tracking":     ("stop_gaze", None, "Stopping gaze tracking mechanism"),
+    "close eye cursor":       ("stop_gaze", None, "Stopping gaze tracking mechanism"),
 }
 
 # Dynamic command prefixes — these extract a query from the speech
 # Order matters: more specific prefixes must come BEFORE general ones
 DYNAMIC_PREFIXES = [
+    ("do a calculation of",   "calculate"),
+    ("calculate",             "calculate"),
+    ("do calculation of",      "calculate"),
     ("search in explorer for", "find_file"),
     ("search in file explorer for", "find_file"),
     ("search in explorer",    "find_file"),
@@ -374,6 +410,11 @@ DYNAMIC_PREFIXES = [
     ("go to website",         "open_url"),
     ("go to",                 "open_url"),
     ("type",                  "type_text"),
+    ("close ",                "close_app"),
+    ("stop ",                 "close_app"),
+    ("terminate ",            "close_app"),
+    ("exit ",                 "close_app"),
+    ("open ",                 "open_app"),
 ]
 
 # Suffixes that specify WHERE to search (stripped from query)
@@ -450,11 +491,14 @@ class VoiceAssistant(threading.Thread):
     Uses Google Speech Recognition (en-IN) + Windows SAPI5 TTS.
     """
 
-    def __init__(self, require_attention=True, **kwargs):
+    def __init__(self, require_attention=True, port="COM7", **kwargs):
         super().__init__(daemon=True, name="VoiceAssistant")
         self.require_attention = require_attention
+        self.port = port
         self._running = False
         self._state = STATE_IDLE
+        self.gaze_tracker = None
+        self.eog_thread = None
 
         # Speech recognizer
         self._recognizer = sr.Recognizer()
@@ -561,19 +605,19 @@ class VoiceAssistant(threading.Thread):
 
     def _process_command(self, text: str):
         """Find the best matching command and execute it."""
-        # 1. Check dynamic prefix commands first (search, find, type, go to)
+        # 1. Exact static match first
+        if text in VOICE_COMMANDS:
+            action_type, arg, response = VOICE_COMMANDS[text]
+            self._execute(action_type, arg, response)
+            return
+
+        # 2. Check dynamic prefix commands (search, find, type, go to)
         for prefix, action in DYNAMIC_PREFIXES:
             if text.startswith(prefix):
                 query = text[len(prefix):].strip()
                 if query:
                     self._execute_dynamic(action, query)
                     return
-
-        # 2. Exact static match
-        if text in VOICE_COMMANDS:
-            action_type, arg, response = VOICE_COMMANDS[text]
-            self._execute(action_type, arg, response)
-            return
 
         # 3. Fuzzy: longest matching phrase contained in text
         best_match = None
@@ -688,6 +732,163 @@ class VoiceAssistant(threading.Thread):
         elif action == "type_text":
             speak(f"Typing {query}")
             pyautogui.typewrite(query, interval=0.03)
+
+        elif action == "calculate":
+            # Clean expression
+            expr = query.lower()
+            on_calc = False
+            if "on calculator" in expr:
+                expr = expr.replace("on calculator", "").strip()
+                on_calc = True
+            elif "in calculator" in expr:
+                expr = expr.replace("in calculator", "").strip()
+                on_calc = True
+
+            # Word replacements for spoken math operators
+            word_map = {
+                "plus": "+", "and": "+",
+                "minus": "-", "subtract": "-",
+                "times": "*", "multiplied by": "*", "multiply": "*", "into": "*", "x": "*",
+                "divided by": "/", "divide": "/", "by": "/"
+            }
+            for word, op in word_map.items():
+                expr = expr.replace(word, op)
+
+            # Filter safe characters for evaluation
+            safe_chars = set("0123456789+-*/(). ")
+            expr_cleaned = "".join(c for c in expr if c in safe_chars).strip()
+
+            try:
+                if expr_cleaned:
+                    # Evaluate mathematical expression safely
+                    result = eval(expr_cleaned, {"__builtins__": None}, {})
+                    if isinstance(result, float) and result.is_integer():
+                        result = int(result)
+                    
+                    spoken_expr = expr_cleaned.replace("*", " times ").replace("/", " divided by ")
+                    speak(f"The result of {spoken_expr} is {result}")
+                    
+                    if on_calc:
+                        # Focus existing calculator window if open; do not spawn a new window if one exists.
+                        import pygetwindow as gw
+                        calc_win = None
+                        try:
+                            # Walk through all windows to find any containing "calculator" (case-insensitive) in title
+                            for win in gw.getAllWindows():
+                                if "calculator" in win.title.lower():
+                                    calc_win = win
+                                    break
+                        except Exception as win_err:
+                            logger.warning(f"Could not search windows with pygetwindow: {win_err}")
+
+                        if calc_win:
+                            try:
+                                calc_win.restore()
+                                calc_win.activate()
+                                time.sleep(0.3)  # Wait for window focus shift
+                                logger.info(f"✓ Focused existing calculator window: '{calc_win.title}'")
+                            except Exception as focus_err:
+                                logger.warning(f"Could not focus existing calculator: {focus_err}. Spawning a new one.")
+                                subprocess.Popen("calc", shell=True)
+                                time.sleep(0.8)
+                        else:
+                            subprocess.Popen("calc", shell=True)
+                            time.sleep(0.8) # Wait for it to focus
+
+                        pyautogui.write(f"{expr_cleaned}=", interval=0.05)
+                else:
+                    speak("Sorry, I could not extract a valid mathematical expression.")
+            except Exception as e:
+                logger.error(f"Calculation error: {e}")
+                speak("Sorry, I had trouble calculating that. Make sure it is a valid mathematical equation.")
+
+        elif action == "close_app":
+            app_name = query.lower().strip()
+            
+            # Common application process mappings on Windows
+            app_process_map = {
+                "calculator": ["CalculatorApp.exe", "calc.exe"],
+                "notepad": ["notepad.exe"],
+                "browser": ["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe"],
+                "chrome": ["chrome.exe"],
+                "edge": ["msedge.exe"],
+                "firefox": ["firefox.exe"],
+                "brave": ["brave.exe"],
+                "opera": ["opera.exe"],
+                "word": ["winword.exe"],
+                "excel": ["excel.exe"],
+                "powerpoint": ["powerpnt.exe"],
+                "outlook": ["outlook.exe"],
+                "onenote": ["onenote.exe"],
+                "teams": ["teams.exe", "msteams.exe"],
+                "steam": ["steam.exe"],
+                "discord": ["discord.exe"],
+                "spotify": ["spotify.exe"],
+                "telegram": ["telegram.exe"],
+                "whatsapp": ["whatsapp.exe"],
+                "zoom": ["zoom.exe"],
+                "nvidia": ["nvcontainer.exe", "nvidia app.exe"],
+                "obs": ["obs64.exe", "obs.exe"],
+                "vlc": ["vlc.exe"],
+                "vs code": ["code.exe"],
+                "code": ["code.exe"],
+                "visual studio": ["devenv.exe"],
+                "photoshop": ["photoshop.exe"],
+                "premiere": ["premiere.exe"],
+                "blender": ["blender.exe"],
+                "unity": ["unity.exe"],
+                "epic games": ["epicgameslauncher.exe"],
+                "terminal": ["windowsterminal.exe", "wt.exe"],
+                "command prompt": ["cmd.exe"],
+                "powershell": ["powershell.exe"],
+                "paint": ["mspaint.exe"],
+                "snipping tool": ["snippingtool.exe"],
+                "settings": ["systemsettings.exe"],
+                "explorer": ["explorer.exe"],
+                "file explorer": ["explorer.exe"],
+            }
+
+            speak(f"Closing {query}")
+
+            # 1. First, search and close via window title using pygetwindow
+            import pygetwindow as gw
+            closed_via_window = False
+            try:
+                for win in gw.getAllWindows():
+                    if app_name in win.title.lower():
+                        win.close()
+                        closed_via_window = True
+                        logger.info(f"✓ Closed window gracefully via pygetwindow: '{win.title}'")
+            except Exception as e:
+                logger.warning(f"Could not close window gracefully: {e}")
+
+            # 2. Also taskkill matching processes to be thorough
+            executables = app_process_map.get(app_name, [f"{app_name}.exe"])
+            
+            # Protection guard: never close explorer.exe unless explicitly stated as "explorer" or "file explorer"
+            if "explorer" in app_name and app_name not in ["explorer", "file explorer"]:
+                pass
+            else:
+                for exe in executables:
+                    if exe.lower() == "explorer.exe":
+                        continue
+                    try:
+                        subprocess.run(f"taskkill /f /im {exe}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+
+        elif action == "open_app":
+            app_name = query.strip()
+            speak(f"Opening {app_name}")
+            import pyautogui
+            try:
+                pyautogui.press('win')
+                time.sleep(0.8)
+                pyautogui.write(app_name, interval=0.03)
+                time.sleep(1.0)
+                pyautogui.press('enter')
+            except Exception as e:
+                logger.error(f"Failed to dynamically open application via Start Menu search: {e}")
 
     def _execute(self, action_type: str, arg, response: str):
         """Execute a static voice command."""
@@ -830,6 +1031,63 @@ class VoiceAssistant(threading.Thread):
             self._state = STATE_SLEEPING
             logger.info("  Jim entering sleep mode")
 
+        elif action_type == "launch_blinking":
+            if self.eog_thread and self.eog_thread.is_alive():
+                speak("Blinking mechanism is already active.")
+            else:
+                speak(response)
+                def run_blinking():
+                    try:
+                        from src.navtools_eog_control import run as eog_run
+                        eog_run(port=self.port, sensitivity=2.5, debug=True, mode="mouse", require_attention=False)
+                    except Exception as err:
+                        logger.error(f"EOG blink launch failed: {err}")
+                
+                self.eog_thread = threading.Thread(target=run_blinking, daemon=True, name="EOGControllerVoice")
+                self.eog_thread.start()
+                logger.info("  ✅ Dynamic Launcher: EOG Blinking Controller spawned via voice!")
+
+        elif action_type == "launch_gaze":
+            # Check if active gaze tracker thread already exists
+            if self.gaze_tracker and self.gaze_tracker.is_alive():
+                speak("Gaze tracking is already active.")
+            else:
+                speak(response)
+                def run_gaze():
+                    try:
+                        from src.gaze_tracker import GazeTracker
+                        tracker = GazeTracker(camera_id=0, smoothing=0.85, show_preview=True, gain=1.6)
+                        tracker.start()
+                        self.gaze_tracker = tracker
+                    except Exception as err:
+                        logger.error(f"Gaze Tracker launch failed: {err}")
+                
+                t = threading.Thread(target=run_gaze, daemon=True, name="GazeTrackerVoice")
+                t.start()
+                logger.info("  ✅ Dynamic Launcher: Gaze Tracker spawned via voice!")
+
+        elif action_type == "stop_blinking":
+            if self.eog_thread and self.eog_thread.is_alive():
+                speak(response)
+                try:
+                    from src.navtools_eog_control import stop_controller
+                    stop_controller()
+                except Exception as err:
+                    logger.error(f"Failed to stop EOG blink controller: {err}")
+            else:
+                speak("Blinking mechanism is not running.")
+
+        elif action_type == "stop_gaze":
+            # Check if gaze tracker instance exists and is running
+            if self.gaze_tracker and self.gaze_tracker.is_alive():
+                speak(response)
+                try:
+                    self.gaze_tracker.stop()
+                except Exception as err:
+                    logger.error(f"Failed to stop gaze tracking: {err}")
+            else:
+                speak("Gaze tracking is not running.")
+
 
 # ──────────────────────────────────────────────
 # ENTRY POINT
@@ -841,10 +1099,13 @@ def main():
     )
     parser.add_argument("--no-attention", action="store_true",
                         help="Disable attention gating (always listen)")
+    parser.add_argument("--port", default="COM7",
+                        help="Arduino COM port (default: COM7)")
     args = parser.parse_args()
 
     assistant = VoiceAssistant(
         require_attention=not args.no_attention,
+        port=args.port,
     )
     assistant.start()
 

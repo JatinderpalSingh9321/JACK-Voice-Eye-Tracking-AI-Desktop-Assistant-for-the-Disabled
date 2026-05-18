@@ -37,8 +37,8 @@ def main():
                         help="EOG mode: 'navtools' or 'mouse' (default: mouse)")
     parser.add_argument("--camera", type=int, default=0,
                         help="Camera index for gaze tracker (default: 0)")
-    parser.add_argument("--smoothing", type=float, default=0.15,
-                        help="Gaze EMA smoothing (default: 0.15)")
+    parser.add_argument("--smoothing", type=float, default=0.85,
+                        help="Gaze EMA smoothing (default: 0.85)")
     parser.add_argument("--preview", action="store_true",
                         help="Show gaze tracker debug preview")
     parser.add_argument("--wake-word", default=None,
@@ -92,6 +92,7 @@ def main():
             voice_assistant = VoiceAssistant(
                 wake_word=args.wake_word,
                 require_attention=not args.no_gaze,
+                port=args.port,
             )
             voice_assistant.start()
             threads.append(voice_assistant)

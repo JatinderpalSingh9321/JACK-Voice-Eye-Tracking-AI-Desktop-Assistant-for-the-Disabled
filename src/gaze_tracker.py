@@ -23,6 +23,7 @@ import urllib.request
 import cv2
 import numpy as np
 import pyautogui
+pyautogui.FAILSAFE = False
 
 from src.utils import setup_logger, DATA_DIR
 from src.attention_state import attention
@@ -95,11 +96,12 @@ class GazeTracker(threading.Thread):
         If True, shows a small debug preview window.
     """
 
-    def __init__(self, camera_id=0, smoothing=0.15, show_preview=False):
+    def __init__(self, camera_id=0, smoothing=0.15, show_preview=False, gain=1.6):
         super().__init__(daemon=True, name="GazeTracker")
         self.camera_id = camera_id
         self.smoothing = smoothing
         self.show_preview = show_preview
+        self.gain = gain
         self._running = False
 
         # Smoothed cursor position
@@ -113,11 +115,11 @@ class GazeTracker(threading.Thread):
         self._sh = screen_h
         logger.info(f"  Screen: {screen_w}×{screen_h}")
 
-        # Calibration boundaries (auto-expand on use)
-        self._cal_xmin = 0.35
-        self._cal_xmax = 0.65
-        self._cal_ymin = 0.30
-        self._cal_ymax = 0.70
+        # Calibration boundaries (initialized dynamically on first frame)
+        self._cal_xmin = None
+        self._cal_xmax = None
+        self._cal_ymin = None
+        self._cal_ymax = None
 
     def run(self):
         import mediapipe as mp
@@ -184,19 +186,46 @@ class GazeTracker(threading.Thread):
 
                 # ── Attention: check if eyes are open ──
                 eyes_open = self._check_eyes_open(lm)
-
+ 
                 # ── Attention: check head pose ──
                 looking_at_screen = self._check_head_pose(lm, frame.shape)
-
-                is_attentive = eyes_open and looking_at_screen
+ 
+                # ── Attention: estimate distance in meters ──
+                dx = lm[LEFT_EYE_CORNER].x - lm[RIGHT_EYE_CORNER].x
+                dy = lm[LEFT_EYE_CORNER].y - lm[RIGHT_EYE_CORNER].y
+                d_norm = np.sqrt(dx**2 + dy**2)
+                # Calibrated for wide-angle webcams (FOV ~78deg): D = 0.06 / d_norm
+                distance_meters = 0.06 / (d_norm + 1e-6)
+                in_range = distance_meters <= 0.7
+ 
+                is_attentive = eyes_open and looking_at_screen and in_range
                 attention.is_attentive = is_attentive
-
+ 
+                # ── Calculate gaze from iris position ──
                 if is_attentive:
-                    # ── Calculate gaze from iris position ──
                     gx, gy = self._calc_gaze(lm)
                     self._update_cursor(gx, gy)
-
+                else:
+                    # Log diagnostics every 15 frames (approx 0.5s) to avoid spamming
+                    if not hasattr(self, '_diag_counter'):
+                        self._diag_counter = 0
+                    self._diag_counter += 1
+                    if self._diag_counter % 15 == 0:
+                        reasons = []
+                        if not eyes_open: reasons.append("Eyes Closed (EAR < 0.12)")
+                        if not looking_at_screen: 
+                            yaw = getattr(self, '_last_yaw', 0.0)
+                            pitch = getattr(self, '_last_pitch', 0.0)
+                            reasons.append(f"Head Turned Away (Yaw: {yaw:.1f}°, Pitch: {pitch:.1f}°)")
+                        if not in_range: reasons.append(f"Too Far ({distance_meters:.2f}m > 0.70m)")
+                        logger.info(f"Tracking paused: {', '.join(reasons)}")
+ 
                 if self.show_preview:
+                    # Draw distance details on frame
+                    color = (0, 255, 0) if in_range else (0, 0, 255)
+                    status_text = "ACTIVE" if in_range else "OUT OF RANGE (>0.7m)"
+                    cv2.putText(frame, f"Dist: {distance_meters:.2f}m ({status_text})", 
+                                (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                     self._draw_debug(frame, lm, is_attentive)
 
             else:
@@ -229,7 +258,7 @@ class GazeTracker(threading.Thread):
         r_ear = ear(R_EYE_TOP, R_EYE_BOT, R_EYE_OUTER, R_EYE_INNER)
         avg_ear = (l_ear + r_ear) / 2.0
 
-        return avg_ear > 0.045  # Threshold for "open"
+        return avg_ear > 0.12  # Threshold for "open" (higher threshold prevents closed-eye hallucination)
 
     def _check_head_pose(self, lm, img_shape) -> bool:
         """Check if head is facing roughly toward the camera."""
@@ -270,55 +299,70 @@ class GazeTracker(threading.Thread):
 
         yaw = angles[1]
         pitch = angles[0]
+ 
+        # Correct the pitch angle for the inverted Y-axis projection baseline (180 degrees)
+        pitch_error = 180.0 - abs(pitch)
 
-        # Within ±25° yaw and ±20° pitch → looking at screen
-        return abs(yaw) < 25 and abs(pitch) < 20
+        # Log angles in diagnostics
+        self._last_yaw = yaw
+        self._last_pitch = pitch_error
+
+        # Within ±45° yaw and ±45° pitch_error → looking at screen
+        return abs(yaw) < 45 and abs(pitch_error) < 45
 
     def _calc_gaze(self, lm) -> tuple:
         """Calculate normalised gaze position (0..1) from iris landmarks."""
-        def iris_ratio(iris_idx, outer_idx, inner_idx, top_idx, bot_idx):
-            iris_x = lm[iris_idx].x
-            outer_x = lm[outer_idx].x
-            inner_x = lm[inner_idx].x
-            hx = (iris_x - outer_x) / (inner_x - outer_x + 1e-6)
+        # Use absolute iris center positions in the image to avoid reverse head-coupling!
+        # When you turn your head left but keep your eyes on the screen, the relative eye 
+        # ratio goes right, which moves the cursor the wrong way. Absolute position fixes this.
+        gx = (lm[L_IRIS_CENTER].x + lm[R_IRIS_CENTER].x) / 2.0
+        gy = (lm[L_IRIS_CENTER].y + lm[R_IRIS_CENTER].y) / 2.0
 
-            iris_y = lm[iris_idx].y
-            top_y = lm[top_idx].y
-            bot_y = lm[bot_idx].y
-            hy = (iris_y - top_y) / (bot_y - top_y + 1e-6)
+        if self._cal_xmin is None:
+            # Initialize very tight bounds around the user's initial resting position
+            self._cal_xmin = gx - 0.015
+            self._cal_xmax = gx + 0.015
+            self._cal_ymin = gy - 0.02
+            self._cal_ymax = gy + 0.02
 
-            return hx, hy
+        # Auto-calibrate boundaries (Expand quickly, shrink extremely slowly)
+        if gx < self._cal_xmin: self._cal_xmin = gx
+        elif gx > self._cal_xmin: self._cal_xmin += (gx - self._cal_xmin) * 0.0001
+        
+        if gx > self._cal_xmax: self._cal_xmax = gx
+        elif gx < self._cal_xmax: self._cal_xmax -= (self._cal_xmax - gx) * 0.0001
 
-        lx, ly = iris_ratio(L_IRIS_CENTER, L_EYE_OUTER, L_EYE_INNER,
-                            L_EYE_TOP, L_EYE_BOT)
-        rx, ry = iris_ratio(R_IRIS_CENTER, R_EYE_OUTER, R_EYE_INNER,
-                            R_EYE_TOP, R_EYE_BOT)
+        if gy < self._cal_ymin: self._cal_ymin = gy
+        elif gy > self._cal_ymin: self._cal_ymin += (gy - self._cal_ymin) * 0.0001
 
-        # Average both eyes
-        gx = (lx + rx) / 2.0
-        gy = (ly + ry) / 2.0
-
-        # Auto-calibrate boundaries
-        alpha = 0.01
-        self._cal_xmin = min(self._cal_xmin, gx) * (1 - alpha) + gx * alpha
-        self._cal_xmax = max(self._cal_xmax, gx) * (1 - alpha) + gx * alpha
-        self._cal_ymin = min(self._cal_ymin, gy) * (1 - alpha) + gy * alpha
-        self._cal_ymax = max(self._cal_ymax, gy) * (1 - alpha) + gy * alpha
+        if gy > self._cal_ymax: self._cal_ymax = gy
+        elif gy < self._cal_ymax: self._cal_ymax -= (self._cal_ymax - gy) * 0.0001
 
         x_range = self._cal_xmax - self._cal_xmin
         y_range = self._cal_ymax - self._cal_ymin
 
         nx = (gx - self._cal_xmin) / (x_range + 1e-6)
         ny = (gy - self._cal_ymin) / (y_range + 1e-6)
+ 
+        # Apply a sensitivity gain (amplify movement from the center)
+        nx = 0.5 + (nx - 0.5) * self.gain
+        ny = 0.5 + (ny - 0.5) * self.gain
 
         return float(np.clip(nx, 0, 1)), float(np.clip(ny, 0, 1))
 
     def _update_cursor(self, gx: float, gy: float):
-        """Apply EMA smoothing and move the OS cursor."""
-        alpha = self.smoothing
+        """Apply velocity-weighted adaptive EMA smoothing and move the OS cursor."""
+        # Calculate horizontal and vertical velocity (distance from current cursor)
+        dist = np.sqrt((gx - self._sx)**2 + (gy - self._sy)**2)
+ 
+        # Adaptive smoothing (snaps instantly for large shifts, wiggles 0% for steady gaze)
+        base_alpha = self.smoothing  # e.g., 0.85
+        # Map dist: 0.0 (steady) -> alpha=0.85, >=0.10 (fast shift) -> alpha=0.30
+        alpha = base_alpha - (base_alpha - 0.30) * np.clip(dist / 0.10, 0, 1)
+ 
         self._sx = self._sx * alpha + gx * (1 - alpha)
         self._sy = self._sy * alpha + gy * (1 - alpha)
-
+ 
         px = int(self._sx * self._sw)
         py = int(self._sy * self._sh)
 
@@ -326,8 +370,8 @@ class GazeTracker(threading.Thread):
 
         try:
             pyautogui.moveTo(px, py, _pause=False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"PyAutoGUI error: {e}")
 
     def _draw_debug(self, frame, lm, is_attentive):
         """Draw debug overlay on the preview window."""
@@ -360,8 +404,10 @@ def main():
     parser = argparse.ArgumentParser(description="Gaze Tracker — Eye tracking cursor")
     parser.add_argument("--camera", type=int, default=0,
                         help="Camera index (default: 0)")
-    parser.add_argument("--smoothing", type=float, default=0.15,
-                        help="EMA smoothing factor (default: 0.15)")
+    parser.add_argument("--smoothing", type=float, default=0.85,
+                        help="EMA smoothing factor (default: 0.85)")
+    parser.add_argument("--gain", type=float, default=1.6,
+                        help="Gaze sensitivity multiplier (default: 1.6)")
     parser.add_argument("--preview", action="store_true",
                         help="Show debug preview window")
     args = parser.parse_args()
@@ -369,7 +415,8 @@ def main():
     tracker = GazeTracker(
         camera_id=args.camera,
         smoothing=args.smoothing,
-        show_preview=args.preview
+        show_preview=args.preview,
+        gain=args.gain
     )
     tracker.start()
 

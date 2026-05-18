@@ -43,6 +43,13 @@ logger = setup_logger("navtools_eog")
 BUF_SIZE      = 5000
 CONTROL_PORT  = 7891   # Must match main.js
 
+_running = True
+
+def stop_controller():
+    global _running
+    _running = False
+    logger.info("  ⏹ EOG stop requested.")
+
 
 # ──────────────────────────────────────────────
 # ACTION CONTROLLERS
@@ -156,6 +163,9 @@ def run(port, sensitivity=2.5, debug=False, mode="navtools",
     require_attention : bool
         If True, ignore blinks when user isn't looking at screen.
     """
+    global _running
+    _running = True
+
     if mode == "mouse":
         ctrl = MouseController()
         # Action mapping for mouse mode
@@ -223,7 +233,7 @@ def run(port, sensitivity=2.5, debug=False, mode="navtools",
     in_refractory     = False
 
     try:
-        while True:
+        while _running:
             time.sleep(0.02)  # 50 Hz
 
             raw = reader.get_recent(5)
