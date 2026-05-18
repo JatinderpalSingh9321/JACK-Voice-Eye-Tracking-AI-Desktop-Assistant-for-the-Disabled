@@ -40,3 +40,16 @@ results/*.png
 
 # Logs
 *.log
+
+# Node.js
+node_modules/
+
+# Vosk models
+data/vosk-model-*/
+
+# MediaPipe models
+*.task
+data/*.task
+
+# Scikit-learn model files (very large)
+data/models/*.pkl

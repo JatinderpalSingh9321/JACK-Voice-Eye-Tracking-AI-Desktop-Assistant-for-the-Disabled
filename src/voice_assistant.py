@@ -1,0 +1,861 @@
+"""
+Jim — Interactive Voice Assistant for NavTools
+=================================================
+Uses Google Speech Recognition (accurate with Indian accent)
+and Windows SAPI5 for speech output.
+
+Flow:
+  1. User says "wake up Jim"
+  2. Jim responds: "What can I help you with today?"
+  3. User speaks their command (e.g., "search for Python tutorials")
+  4. Jim executes and confirms vocally
+  5. Jim goes back to idle, waiting for "wake up Jim" again
+
+Supports:
+  - App launching (browser, calculator, notepad, etc.)
+  - Browser search ("search for ...")
+  - File Explorer search ("find file ...")
+  - Tab navigation (next tab, previous tab, close tab, new tab)
+  - Page navigation (go back, go forward, refresh)
+  - Scrolling (scroll up/down, page up/down, go to top/bottom)
+  - Link clicking ("click link", "open link")
+  - Window management (close, minimize, maximize, switch window)
+  - System controls (volume, screenshot, lock)
+
+Usage (standalone):
+  python -m src.voice_assistant
+  python -m src.voice_assistant --no-attention
+
+Group No. 7 | 8th Semester Major Project
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import threading
+import time
+import urllib.parse
+
+import speech_recognition as sr
+
+from src.utils import setup_logger, PROJECT_ROOT, DATA_DIR
+from src.attention_state import attention
+
+logger = setup_logger("jim")
+
+
+# ──────────────────────────────────────────────
+# TEXT-TO-SPEECH (Windows SAPI5 via PowerShell)
+# ──────────────────────────────────────────────
+
+def speak(text: str):
+    """Speak text using Windows SAPI5. Works reliably in any thread."""
+    logger.info(f"  [Jim]: \"{text}\"")
+    safe = text.replace("'", "''")
+    cmd = (
+        f"powershell -Command \""
+        f"Add-Type -AssemblyName System.Speech; "
+        f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+        f"$s.Rate = 1; "
+        f"$s.Speak('{safe}')\""
+    )
+    try:
+        subprocess.run(cmd, shell=True, timeout=30,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        logger.error(f"  TTS error: {e}")
+
+
+# ──────────────────────────────────────────────
+# STATIC COMMAND DEFINITIONS
+# ──────────────────────────────────────────────
+
+VOICE_COMMANDS = {
+    # ── App Launches — Browsers & Web ──
+    "open browser":        ("launch", "start https://www.google.com", "Opening web browser"),
+    "open chrome":         ("launch", "start chrome", "Opening Chrome"),
+    "open google":         ("launch", "start https://www.google.com", "Opening Google"),
+    "open youtube":        ("launch", "start https://www.youtube.com", "Opening YouTube"),
+    "open edge":           ("launch", "start msedge", "Opening Microsoft Edge"),
+    "open firefox":        ("launch", "start firefox", "Opening Firefox"),
+
+    # ── App Launches — Windows Built-in ──
+    "open calculator":     ("launch", "calc", "Opening calculator"),
+    "open notepad":        ("launch", "notepad", "Opening notepad"),
+    "open settings":       ("launch", "start ms-settings:", "Opening settings"),
+    "open file explorer":  ("launch", "explorer", "Opening file explorer"),
+    "open explorer":       ("launch", "explorer", "Opening file explorer"),
+    "open my computer":    ("launch", "explorer ::{20D04FE0-3AEA-1069-A2D8-08002B30309D}", "Opening My Computer"),
+    "open this pc":        ("launch", "explorer ::{20D04FE0-3AEA-1069-A2D8-08002B30309D}", "Opening This PC"),
+    "open recycle bin":    ("launch", "explorer ::{645FF040-5081-101B-9F08-00AA002F954E}", "Opening Recycle Bin"),
+    "open control panel":  ("launch", "control", "Opening Control Panel"),
+    "open task manager":   ("launch", "taskmgr", "Opening Task Manager"),
+    "open camera":         ("launch", "start microsoft.windows.camera:", "Opening camera"),
+    "open terminal":       ("launch", "wt", "Opening terminal"),
+    "open command prompt": ("launch", "cmd", "Opening Command Prompt"),
+    "open powershell":     ("launch", "powershell", "Opening PowerShell"),
+    "open paint":          ("launch", "mspaint", "Opening paint"),
+    "open snipping tool":  ("launch", "snippingtool", "Opening Snipping Tool"),
+    "open clock":          ("launch", "start ms-clock:", "Opening clock"),
+    "open alarms":         ("launch", "start ms-clock:", "Opening alarms"),
+    "open calendar":       ("launch", "start outlookcal:", "Opening calendar"),
+    "open maps":           ("launch", "start bingmaps:", "Opening maps"),
+    "open weather":        ("launch", "start bingweather:", "Opening weather"),
+    "open store":          ("launch", "start ms-windows-store:", "Opening Microsoft Store"),
+    "open microsoft store":("launch", "start ms-windows-store:", "Opening Microsoft Store"),
+    "open mail":           ("launch", "start outlookmail:", "Opening mail"),
+    "open photos":         ("launch", "start ms-photos:", "Opening Photos"),
+    "open music":          ("launch", "start mswindowsmusic:", "Opening music player"),
+    "open videos":         ("launch", "start mswindowsvideo:", "Opening video player"),
+    "open sticky notes":   ("launch", "start ms-stickynotes:", "Opening Sticky Notes"),
+    "open voice recorder": ("launch", "start ms-soundrecorder:", "Opening Voice Recorder"),
+    "open recorder":       ("launch", "start ms-soundrecorder:", "Opening Voice Recorder"),
+    "open magnifier":      ("launch", "magnify", "Opening Magnifier"),
+    "open narrator":       ("launch", "narrator", "Opening Narrator"),
+    "open device manager": ("launch", "devmgmt.msc", "Opening Device Manager"),
+    "open disk management":("launch", "diskmgmt.msc", "Opening Disk Management"),
+    "open system info":    ("launch", "msinfo32", "Opening System Information"),
+    "open remote desktop": ("launch", "mstsc", "Opening Remote Desktop"),
+
+    # ── App Launches — Microsoft Office ──
+    "open word":           ("launch", "start winword", "Opening Microsoft Word"),
+    "open excel":          ("launch", "start excel", "Opening Microsoft Excel"),
+    "open powerpoint":     ("launch", "start powerpnt", "Opening PowerPoint"),
+    "open outlook":        ("launch", "start outlook", "Opening Outlook"),
+    "open teams":          ("launch", "start msteams:", "Opening Microsoft Teams"),
+    "open onenote":        ("launch", "start onenote:", "Opening OneNote"),
+
+    # ── App Launches — Third Party (Start Menu search) ──
+    "open steam":          ("start_menu", "Steam", "Opening Steam"),
+    "open discord":        ("start_menu", "Discord", "Opening Discord"),
+    "open spotify":        ("start_menu", "Spotify", "Opening Spotify"),
+    "open telegram":       ("start_menu", "Telegram", "Opening Telegram"),
+    "open whatsapp":       ("start_menu", "WhatsApp", "Opening WhatsApp"),
+    "open zoom":           ("start_menu", "Zoom", "Opening Zoom"),
+    "open nvidia":         ("start_menu", "NVIDIA", "Opening NVIDIA App"),
+    "open nvidia app":     ("start_menu", "NVIDIA", "Opening NVIDIA App"),
+    "open geforce":        ("start_menu", "GeForce", "Opening GeForce Experience"),
+    "open obs":            ("start_menu", "OBS", "Opening OBS Studio"),
+    "open vlc":            ("start_menu", "VLC", "Opening VLC"),
+    "open vs code":        ("start_menu", "Visual Studio Code", "Opening VS Code"),
+    "open visual studio":  ("start_menu", "Visual Studio", "Opening Visual Studio"),
+    "open photoshop":      ("start_menu", "Photoshop", "Opening Photoshop"),
+    "open premiere":       ("start_menu", "Premiere", "Opening Premiere Pro"),
+    "open blender":        ("start_menu", "Blender", "Opening Blender"),
+    "open unity":          ("start_menu", "Unity", "Opening Unity"),
+    "open epic games":     ("start_menu", "Epic Games", "Opening Epic Games"),
+    "open brave":          ("start_menu", "Brave", "Opening Brave Browser"),
+    "open opera":          ("start_menu", "Opera", "Opening Opera"),
+
+    # ── App Launches — Folders ──
+    "open downloads":      ("launch", "explorer Downloads", "Opening downloads folder"),
+    "open documents":      ("launch", "explorer Documents", "Opening documents folder"),
+    "open desktop":        ("launch", "explorer Desktop", "Opening desktop folder"),
+    "open pictures":       ("launch", "explorer Pictures", "Opening pictures folder"),
+
+    # ── Tab Navigation ──
+    "next tab":            ("hotkey", "ctrl+tab", "Switching to next tab"),
+    "previous tab":        ("hotkey", "ctrl+shift+tab", "Switching to previous tab"),
+    "close tab":           ("hotkey", "ctrl+w", "Closing tab"),
+    "close current tab":   ("hotkey", "ctrl+w", "Closing current tab"),
+    "close this tab":      ("hotkey", "ctrl+w", "Closing this tab"),
+    "new tab":             ("hotkey", "ctrl+t", "Opening new tab"),
+    "open new tab":        ("hotkey", "ctrl+t", "Opening new tab"),
+    "open a new tab":      ("hotkey", "ctrl+t", "Opening new tab"),
+    "reopen tab":          ("hotkey", "ctrl+shift+t", "Reopening last closed tab"),
+
+    # ── Page Navigation ──
+    "go back":             ("hotkey", "alt+left", "Going back"),
+    "go forward":          ("hotkey", "alt+right", "Going forward"),
+    "refresh":             ("hotkey", "F5", "Refreshing page"),
+    "refresh page":        ("hotkey", "F5", "Refreshing page"),
+    "reload":              ("hotkey", "F5", "Reloading page"),
+    "reload page":         ("hotkey", "F5", "Reloading page"),
+    "go home":             ("hotkey", "alt+home", "Going to home page"),
+    "address bar":         ("hotkey", "ctrl+l", "Focusing address bar"),
+    "focus address bar":   ("hotkey", "ctrl+l", "Focusing address bar"),
+
+    # ── Scrolling ──
+    "scroll up":           ("scroll", "up_3", "Scrolling up"),
+    "scroll down":         ("scroll", "down_3", "Scrolling down"),
+    "scroll up more":      ("scroll", "up_10", "Scrolling up more"),
+    "scroll down more":    ("scroll", "down_10", "Scrolling down more"),
+    "scroll left":         ("scroll", "left_3", "Scrolling left"),
+    "scroll right":        ("scroll", "right_3", "Scrolling right"),
+    "page up":             ("hotkey", "pageup", "Page up"),
+    "page down":           ("hotkey", "pagedown", "Page down"),
+    "go to top":           ("hotkey", "ctrl+home", "Going to top of page"),
+    "go to bottom":        ("hotkey", "ctrl+end", "Going to bottom of page"),
+    "top of page":         ("hotkey", "ctrl+home", "Going to top of page"),
+    "bottom of page":      ("hotkey", "ctrl+end", "Going to bottom of page"),
+
+    # ── Click / Mouse ──
+    "click":               ("mouse_click", "left", "Clicking"),
+    "click here":          ("mouse_click", "left", "Clicking here"),
+    "click link":          ("mouse_click", "left", "Clicking link"),
+    "click the link":      ("mouse_click", "left", "Clicking the link"),
+    "click that":          ("mouse_click", "left", "Clicking"),
+    "click on that":       ("mouse_click", "left", "Clicking"),
+    "right click":         ("mouse_click", "right", "Right clicking"),
+    "double click":        ("mouse_click", "double", "Double clicking"),
+    "open link":           ("mouse_click", "left", "Opening link"),
+    "open the link":       ("mouse_click", "left", "Opening the link"),
+    "open link in new tab": ("hotkey", "ctrl+enter", "Opening link in new tab"),
+    # Positional link/result clicking (works on Google search results)
+    "click first link":     ("click_nth_link", "1", "Clicking the first link"),
+    "click the first link":  ("click_nth_link", "1", "Clicking the first link"),
+    "click first result":   ("click_nth_link", "1", "Clicking the first result"),
+    "click the first result":("click_nth_link", "1", "Clicking the first result"),
+    "open first link":      ("click_nth_link", "1", "Opening the first link"),
+    "open first result":    ("click_nth_link", "1", "Opening the first result"),
+    "open the first link":  ("click_nth_link", "1", "Opening the first link"),
+    "click second link":    ("click_nth_link", "2", "Clicking the second link"),
+    "click the second link": ("click_nth_link", "2", "Clicking the second link"),
+    "click second result":  ("click_nth_link", "2", "Clicking the second result"),
+    "click the second result":("click_nth_link", "2", "Clicking the second result"),
+    "open second link":     ("click_nth_link", "2", "Opening the second link"),
+    "open the second link": ("click_nth_link", "2", "Opening the second link"),
+    "click third link":     ("click_nth_link", "3", "Clicking the third link"),
+    "click the third link":  ("click_nth_link", "3", "Clicking the third link"),
+    "click third result":   ("click_nth_link", "3", "Clicking the third result"),
+    "open third link":      ("click_nth_link", "3", "Opening the third link"),
+    "click fourth link":    ("click_nth_link", "4", "Clicking the fourth link"),
+    "click the fourth link": ("click_nth_link", "4", "Clicking the fourth link"),
+    "click fourth result":  ("click_nth_link", "4", "Clicking the fourth result"),
+    "open fourth link":     ("click_nth_link", "4", "Opening the fourth link"),
+    "click fifth link":     ("click_nth_link", "5", "Clicking the fifth link"),
+    "click the fifth link":  ("click_nth_link", "5", "Clicking the fifth link"),
+    "click fifth result":   ("click_nth_link", "5", "Clicking the fifth result"),
+    "open fifth link":      ("click_nth_link", "5", "Opening the fifth link"),
+    "click last link":      ("click_nth_link", "-1", "Clicking the last link"),
+    "click the last link":   ("click_nth_link", "-1", "Clicking the last link"),
+    "click last result":    ("click_nth_link", "-1", "Clicking the last result"),
+    "open last link":       ("click_nth_link", "-1", "Opening the last link"),
+    "open the last link":   ("click_nth_link", "-1", "Opening the last link"),
+    "next link":            ("hotkey", "tab", "Moving to next link"),
+    "previous link":        ("hotkey", "shift+tab", "Moving to previous link"),
+
+    # ── File Selection (in File Explorer) ──
+    "open first file":      ("select_nth_file", "1_open", "Opening the first file"),
+    "open the first file":  ("select_nth_file", "1_open", "Opening the first file"),
+    "open second file":     ("select_nth_file", "2_open", "Opening the second file"),
+    "open the second file": ("select_nth_file", "2_open", "Opening the second file"),
+    "open third file":      ("select_nth_file", "3_open", "Opening the third file"),
+    "open the third file":  ("select_nth_file", "3_open", "Opening the third file"),
+    "open fourth file":     ("select_nth_file", "4_open", "Opening the fourth file"),
+    "open the fourth file": ("select_nth_file", "4_open", "Opening the fourth file"),
+    "open fifth file":      ("select_nth_file", "5_open", "Opening the fifth file"),
+    "open the fifth file":  ("select_nth_file", "5_open", "Opening the fifth file"),
+    "open last file":       ("select_nth_file", "-1_open", "Opening the last file"),
+    "open the last file":   ("select_nth_file", "-1_open", "Opening the last file"),
+    "select first file":    ("select_nth_file", "1_select", "Selecting the first file"),
+    "select the first file": ("select_nth_file", "1_select", "Selecting the first file"),
+    "select second file":   ("select_nth_file", "2_select", "Selecting the second file"),
+    "select the second file":("select_nth_file", "2_select", "Selecting the second file"),
+    "select third file":    ("select_nth_file", "3_select", "Selecting the third file"),
+    "select last file":     ("select_nth_file", "-1_select", "Selecting the last file"),
+    "open next file":       ("select_nth_file", "next_open", "Opening the next file"),
+    "open previous file":   ("select_nth_file", "prev_open", "Opening the previous file"),
+    "next file":            ("select_nth_file", "next_select", "Selecting next file"),
+    "previous file":        ("select_nth_file", "prev_select", "Selecting previous file"),
+
+    # ── File Operations (on selected file in Explorer) ──
+    "open selected file":   ("hotkey", "enter", "Opening selected file"),
+    "open this file":       ("hotkey", "enter", "Opening this file"),
+    "open it":              ("hotkey", "enter", "Opening it"),
+    "properties":           ("hotkey", "alt+enter", "Showing properties"),
+    "file properties":      ("hotkey", "alt+enter", "Showing file properties"),
+    "show properties":      ("hotkey", "alt+enter", "Showing properties"),
+    "delete file":          ("hotkey", "delete", "Deleting file"),
+    "delete this":          ("hotkey", "delete", "Deleting"),
+    "delete":               ("hotkey", "delete", "Deleting"),
+    "permanent delete":     ("hotkey", "shift+delete", "Permanently deleting"),
+    "rename file":          ("hotkey", "F2", "Renaming file"),
+    "rename":               ("hotkey", "F2", "Ready to rename"),
+    "rename this":          ("hotkey", "F2", "Ready to rename"),
+    "copy file":            ("hotkey", "ctrl+c", "Copied file"),
+    "cut file":             ("hotkey", "ctrl+x", "Cut file"),
+    "paste file":           ("hotkey", "ctrl+v", "Pasting"),
+    "new folder":           ("hotkey", "ctrl+shift+n", "Creating new folder"),
+    "create folder":        ("hotkey", "ctrl+shift+n", "Creating new folder"),
+
+    # ── Close / Dismiss / Cancel ──
+    "close properties":     ("hotkey", "escape", "Closing properties"),
+    "close dialog":         ("hotkey", "escape", "Closing dialog"),
+    "close popup":          ("hotkey", "escape", "Closing popup"),
+    "close menu":           ("hotkey", "escape", "Closing menu"),
+    "close this":           ("hotkey", "alt+F4", "Closing this"),
+    "close it":             ("hotkey", "escape", "Closing it"),
+    "dismiss":              ("hotkey", "escape", "Dismissed"),
+    "cancel":               ("hotkey", "escape", "Cancelled"),
+    "escape":               ("hotkey", "escape", "Escape"),
+    "go back":              ("hotkey", "alt+left", "Going back"),
+    "press ok":             ("hotkey", "enter", "Pressing OK"),
+    "ok":                   ("hotkey", "enter", "OK"),
+    "confirm":              ("hotkey", "enter", "Confirmed"),
+    "press yes":            ("hotkey", "alt+y", "Pressing Yes"),
+    "yes":                  ("hotkey", "alt+y", "Yes"),
+    "press no":             ("hotkey", "alt+n", "Pressing No"),
+    "no":                   ("hotkey", "alt+n", "No"),
+
+    # ── Find on Page ──
+    "find on page":        ("hotkey", "ctrl+f", "Opening find on page"),
+    "find":                ("hotkey", "ctrl+f", "Opening find on page"),
+
+    # ── Window Management ──
+    "close window":        ("hotkey", "alt+F4", "Closing window"),
+    "close this":          ("hotkey", "alt+F4", "Closing window"),
+    "close this window":   ("hotkey", "alt+F4", "Closing window"),
+    "minimize":            ("hotkey", "win+down", "Minimizing window"),
+    "minimize window":     ("hotkey", "win+down", "Minimizing"),
+    "maximize":            ("hotkey", "win+up", "Maximizing window"),
+    "maximize window":     ("hotkey", "win+up", "Maximizing"),
+    "switch window":       ("hotkey", "alt+tab", "Switching window"),
+    "switch app":          ("hotkey", "alt+tab", "Switching app"),
+    "show desktop":        ("hotkey", "win+d", "Showing desktop"),
+    "snap left":           ("hotkey", "win+left", "Snapping window left"),
+    "snap right":          ("hotkey", "win+right", "Snapping window right"),
+    "full screen":         ("hotkey", "F11", "Toggling full screen"),
+
+    # ── System ──
+    "take screenshot":     ("hotkey", "win+shift+s", "Taking screenshot"),
+    "screenshot":          ("hotkey", "win+shift+s", "Taking screenshot"),
+    "lock screen":         ("hotkey", "win+l", "Locking screen"),
+    "volume up":           ("hotkey", "volumeup", "Volume up"),
+    "volume down":         ("hotkey", "volumedown", "Volume down"),
+    "mute":                ("hotkey", "volumemute", "Toggling mute"),
+    "play pause":          ("hotkey", "playpause", "Play or pause"),
+    "copy":                ("hotkey", "ctrl+c", "Copied"),
+    "paste":               ("hotkey", "ctrl+v", "Pasted"),
+    "undo":                ("hotkey", "ctrl+z", "Undo"),
+    "redo":                ("hotkey", "ctrl+y", "Redo"),
+    "select all":          ("hotkey", "ctrl+a", "Selected all"),
+
+    # ── NavTools UI ──
+    "go right":            ("nav", "right", "Moving right"),
+    "move right":          ("nav", "right", "Moving right"),
+    "next":                ("nav", "right", "Next"),
+    "go left":             ("nav", "left", "Moving left"),
+    "move left":           ("nav", "left", "Moving left"),
+    "previous":            ("nav", "left", "Previous"),
+    "select":              ("nav", "select", "Selecting"),
+    "enter":               ("nav", "select", "Entering"),
+
+    # ── Assistant ──
+    "what can you do":     ("help", None, None),
+    "help":                ("help", None, None),
+    "help me":             ("help", None, None),
+    "stop listening":      ("sleep", None, "Going to sleep. Say wake up Jim when you need me."),
+    "go to sleep":         ("sleep", None, "Going to sleep. Say wake up Jim when you need me."),
+    "sleep":               ("sleep", None, "Going to sleep. Say wake up Jim when you need me."),
+}
+
+# Dynamic command prefixes — these extract a query from the speech
+# Order matters: more specific prefixes must come BEFORE general ones
+DYNAMIC_PREFIXES = [
+    ("search in explorer for", "find_file"),
+    ("search in file explorer for", "find_file"),
+    ("search in explorer",    "find_file"),
+    ("search in file explorer","find_file"),
+    ("find file",             "find_file"),
+    ("find folder",           "find_file"),
+    ("search file",           "find_file"),
+    ("search files for",      "find_file"),
+    ("google search for",     "search_google"),
+    ("google search",         "search_google"),
+    ("google",                "search_google"),
+    ("search for",            "search_smart"),
+    ("search",                "search_smart"),
+    ("look up",               "search_smart"),
+    ("open file",             "open_file"),
+    ("open folder",           "open_folder"),
+    ("open website",          "open_url"),
+    ("go to website",         "open_url"),
+    ("go to",                 "open_url"),
+    ("type",                  "type_text"),
+]
+
+# Suffixes that specify WHERE to search (stripped from query)
+SEARCH_TARGET_SUFFIXES = [
+    ("in file explorer",  "explorer"),
+    ("in explorer",       "explorer"),
+    ("in files",          "explorer"),
+    ("in folders",        "explorer"),
+    ("in browser",        "google"),
+    ("in chrome",         "google"),
+    ("in google",         "google"),
+    ("on google",         "google"),
+    ("on chrome",         "google"),
+    ("on browser",        "google"),
+    ("on the web",        "google"),
+    ("online",            "google"),
+]
+
+
+# ──────────────────────────────────────────────
+# WAKE PHRASE DETECTION
+# ──────────────────────────────────────────────
+
+WAKE_PHRASES = [
+    # Primary wake phrases
+    "wake up jim", "wake up gym", "wake up gem",
+    "wake up tim", "wake up him", "wake up team",
+    "wakeup jim", "wake of jim",
+    # "hey jim" variants
+    "hey jim", "hey gym", "hey gem", "hey tim",
+    "a jim", "a gym",
+    # "wake up" alone (no name needed)
+    "wake up",
+    # Observed Google Speech mishears
+    "breakup gym", "break up gym", "breakup jim",
+    "makeup gym", "make up gym",
+    "because gym", "because jim",
+]
+
+STATE_IDLE      = "idle"
+STATE_LISTENING = "listening"
+STATE_SLEEPING  = "sleeping"
+
+
+def _contains_wake(text: str) -> bool:
+    """Check if any wake phrase variant appears in the text."""
+    text = text.lower().strip()
+    for phrase in WAKE_PHRASES:
+        if phrase in text:
+            return True
+    # Fuzzy: "jim"/"gym" near "wake"/"hey"/"up"
+    words = set(text.split())
+    primary = {"jim", "gym", "gem", "tim"}
+    secondary = {"wake", "woke", "up", "hey", "hi"}
+    return bool(words & primary) and bool(words & secondary)
+
+
+def _strip_wake(text: str) -> str:
+    """Remove the wake phrase from text and return the remainder."""
+    text = text.lower().strip()
+    for phrase in WAKE_PHRASES:
+        if phrase in text:
+            return text.split(phrase, 1)[-1].strip()
+    return text
+
+
+# ──────────────────────────────────────────────
+# JIM VOICE ASSISTANT
+# ──────────────────────────────────────────────
+
+class VoiceAssistant(threading.Thread):
+    """
+    Interactive voice assistant named Jim.
+    Uses Google Speech Recognition (en-IN) + Windows SAPI5 TTS.
+    """
+
+    def __init__(self, require_attention=True, **kwargs):
+        super().__init__(daemon=True, name="VoiceAssistant")
+        self.require_attention = require_attention
+        self._running = False
+        self._state = STATE_IDLE
+
+        # Speech recognizer
+        self._recognizer = sr.Recognizer()
+        self._recognizer.energy_threshold = 400
+        self._recognizer.dynamic_energy_threshold = False
+        self._recognizer.pause_threshold = 0.8
+
+    def _listen(self, mic, timeout=5, phrase_time_limit=6) -> str:
+        """Listen to microphone and return transcribed text."""
+        try:
+            logger.info("  (listening...)")
+            audio = self._recognizer.listen(
+                mic, timeout=timeout,
+                phrase_time_limit=phrase_time_limit
+            )
+            audio_len = len(audio.get_raw_data())
+            logger.info(f"  (got {audio_len/32000:.1f}s audio, recognizing...)")
+
+            try:
+                text = self._recognizer.recognize_google(audio, language="en-IN")
+                logger.info(f"  >>> YOU SAID: \"{text}\"")
+                return text.lower().strip()
+            except sr.UnknownValueError:
+                logger.info("  (could not understand)")
+                return ""
+            except sr.RequestError as e:
+                logger.info(f"  (Google error: {e})")
+                return ""
+
+        except sr.WaitTimeoutError:
+            return ""
+        except Exception as e:
+            logger.error(f"  Listen error: {type(e).__name__}: {e}")
+            return ""
+
+    def run(self):
+        self._running = True
+
+        # Greeting BEFORE opening mic
+        speak("Jim assistant is online. Say wake up Jim or hey Jim to activate me.")
+
+        # Open mic
+        mic = sr.Microphone()
+        mic_source = mic.__enter__()
+        logger.info("  Microphone opened")
+
+        logger.info("=" * 55)
+        logger.info("  Jim Voice Assistant -- READY")
+        logger.info("  Say \"wake up Jim\" to activate")
+        logger.info("=" * 55)
+
+        try:
+            while self._running:
+                # Attention gate
+                if self.require_attention and not attention.is_attentive:
+                    time.sleep(0.5)
+                    continue
+
+                # Listen for audio
+                text = self._listen(mic_source, timeout=3, phrase_time_limit=5)
+
+                if not text:
+                    continue
+
+                # ── SLEEPING ──
+                if self._state == STATE_SLEEPING:
+                    if _contains_wake(text):
+                        self._state = STATE_IDLE
+                        logger.info("  Jim woke up from sleep")
+                    else:
+                        continue
+
+                # ── IDLE: waiting for wake phrase ──
+                if self._state == STATE_IDLE:
+                    if _contains_wake(text):
+                        after_wake = _strip_wake(text)
+                        if after_wake and len(after_wake) > 2:
+                            speak("What can I help you with today?")
+                            self._process_command(after_wake)
+                        else:
+                            self._state = STATE_LISTENING
+                            speak("What can I help you with today?")
+                            cmd = self._listen(mic_source, timeout=8, phrase_time_limit=8)
+                            if cmd:
+                                logger.info(f"  >>> COMMAND: \"{cmd}\"")
+                                self._process_command(cmd)
+                            else:
+                                speak("I didn't catch that. Say hey Jim to try again.")
+                            self._state = STATE_IDLE
+                    continue
+
+        except KeyboardInterrupt:
+            pass
+        finally:
+            try:
+                mic.__exit__(None, None, None)
+            except Exception:
+                pass
+            speak("Jim signing off. Goodbye.")
+            logger.info("Jim assistant stopped")
+
+    def stop(self):
+        self._running = False
+
+    def _process_command(self, text: str):
+        """Find the best matching command and execute it."""
+        # 1. Check dynamic prefix commands first (search, find, type, go to)
+        for prefix, action in DYNAMIC_PREFIXES:
+            if text.startswith(prefix):
+                query = text[len(prefix):].strip()
+                if query:
+                    self._execute_dynamic(action, query)
+                    return
+
+        # 2. Exact static match
+        if text in VOICE_COMMANDS:
+            action_type, arg, response = VOICE_COMMANDS[text]
+            self._execute(action_type, arg, response)
+            return
+
+        # 3. Fuzzy: longest matching phrase contained in text
+        best_match = None
+        best_len = 0
+        for phrase, (action_type, arg, response) in VOICE_COMMANDS.items():
+            if phrase in text and len(phrase) > best_len:
+                best_match = (action_type, arg, response)
+                best_len = len(phrase)
+
+        if best_match:
+            self._execute(best_match[0], best_match[1], best_match[2])
+        else:
+            logger.info(f"  No command matched: \"{text}\"")
+            speak(f"Sorry, I didn't understand that. Say help to see what I can do.")
+
+    def _execute_dynamic(self, action: str, query: str):
+        """Execute dynamic commands that take a query parameter."""
+        import pyautogui
+
+        if action == "search_smart":
+            # Smart search: detect target app from suffix
+            target = "current"  # default: search in current window
+            for suffix, t in SEARCH_TARGET_SUFFIXES:
+                if query.endswith(suffix):
+                    query = query[:-len(suffix)].strip()
+                    target = t
+                    break
+
+            if target == "google":
+                speak(f"Searching Google for {query}")
+                encoded = urllib.parse.quote_plus(query)
+                url = f"https://www.google.com/search?q={encoded}"
+                try:
+                    subprocess.Popen(f"start {url}", shell=True)
+                except Exception as e:
+                    logger.error(f"Search failed: {e}")
+
+            elif target == "explorer":
+                speak(f"Searching files for {query}")
+                try:
+                    subprocess.Popen(
+                        f'explorer /root,"search-ms:query={query}"',
+                        shell=True
+                    )
+                except Exception as e:
+                    logger.error(f"File search failed: {e}")
+
+            else:
+                # Search in currently active window using Ctrl+E
+                # (works in File Explorer, Chrome, Edge, and many apps)
+                speak(f"Searching for {query}")
+                pyautogui.hotkey('ctrl', 'e')
+                time.sleep(0.5)
+                # Clear any existing text and type the query
+                pyautogui.hotkey('ctrl', 'a')
+                time.sleep(0.1)
+                # Use clipboard to paste (supports all characters)
+                try:
+                    subprocess.run(
+                        ['powershell', '-Command',
+                         f"Set-Clipboard -Value '{query.replace(chr(39), chr(39)+chr(39))}'"],
+                        timeout=5, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    pyautogui.hotkey('ctrl', 'v')
+                    time.sleep(0.3)
+                    pyautogui.press('enter')
+                except Exception as e:
+                    logger.error(f"Search typing failed: {e}")
+
+        elif action == "search_google":
+            speak(f"Searching Google for {query}")
+            encoded = urllib.parse.quote_plus(query)
+            url = f"https://www.google.com/search?q={encoded}"
+            try:
+                subprocess.Popen(f"start {url}", shell=True)
+            except Exception as e:
+                logger.error(f"Search failed: {e}")
+
+        elif action == "find_file":
+            speak(f"Searching files for {query}")
+            try:
+                subprocess.Popen(f'explorer /root,"search-ms:query={query}"', shell=True)
+            except Exception as e:
+                logger.error(f"File search failed: {e}")
+
+        elif action == "open_file":
+            speak(f"Opening file {query}")
+            # Use Windows search to find and open the file
+            try:
+                subprocess.Popen(f'explorer /root,"search-ms:query={query}"', shell=True)
+            except Exception as e:
+                logger.error(f"Open file failed: {e}")
+
+        elif action == "open_folder":
+            speak(f"Opening folder {query}")
+            try:
+                subprocess.Popen(f'explorer /root,"search-ms:query={query}&crumb=kind:folder"', shell=True)
+            except Exception as e:
+                logger.error(f"Open folder failed: {e}")
+
+        elif action == "open_url":
+            site = query.strip().replace(" ", "")
+            if not site.startswith("http"):
+                site = f"https://www.{site}.com"
+            speak(f"Opening {query}")
+            try:
+                subprocess.Popen(f"start {site}", shell=True)
+            except Exception as e:
+                logger.error(f"URL open failed: {e}")
+
+        elif action == "type_text":
+            speak(f"Typing {query}")
+            pyautogui.typewrite(query, interval=0.03)
+
+    def _execute(self, action_type: str, arg, response: str):
+        """Execute a static voice command."""
+        import pyautogui
+
+        if action_type == "launch":
+            speak(response)
+            try:
+                subprocess.Popen(arg, shell=True)
+            except Exception as e:
+                logger.error(f"Launch failed: {e}")
+                speak("Sorry, I couldn't open that application.")
+
+        elif action_type == "hotkey":
+            speak(response)
+            keys = arg.split("+")
+            try:
+                pyautogui.hotkey(*keys)
+            except Exception as e:
+                logger.error(f"Hotkey failed: {e}")
+
+        elif action_type == "mouse_click":
+            speak(response)
+            if arg == "left":
+                pyautogui.click()
+            elif arg == "right":
+                pyautogui.rightClick()
+            elif arg == "double":
+                pyautogui.doubleClick()
+
+        elif action_type == "click_nth_link":
+            speak(response)
+            n = int(arg)
+            # Click the nth search result by calculated screen position.
+            # Google search results have a predictable layout:
+            #   - Results start at ~22% from top of screen
+            #   - Each result block is ~10% of screen height
+            #   - Titles are at ~35% from left edge
+            screen_w, screen_h = pyautogui.size()
+
+            if n == -1:
+                # "Last link" — click near the bottom of visible results
+                x = int(screen_w * 0.35)
+                y = int(screen_h * 0.80)
+            else:
+                x = int(screen_w * 0.35)
+                y_start = int(screen_h * 0.22)
+                y_step = int(screen_h * 0.10)
+                y = y_start + (n - 1) * y_step
+
+            logger.info(f"  Clicking at ({x}, {y}) for result #{n}")
+            pyautogui.click(x, y)
+
+        elif action_type == "start_menu":
+            # Open apps via Windows Start Menu search
+            speak(response)
+            pyautogui.press('win')
+            time.sleep(0.8)
+            pyautogui.write(arg, interval=0.03)
+            time.sleep(1.0)
+            pyautogui.press('enter')
+
+        elif action_type == "select_nth_file":
+            speak(response)
+            # Parse arg: "N_action" where action is "open" or "select"
+            parts = arg.split('_')
+            pos = parts[0]      # "1", "2", "-1", "next", "prev"
+            action = parts[1]   # "open" or "select"
+
+            # Focus the file list using F6 (cycles panes in Explorer)
+            pyautogui.press('F6')
+            time.sleep(0.3)
+            pyautogui.press('F6')
+            time.sleep(0.3)
+
+            if pos == "next":
+                pyautogui.press('down')
+            elif pos == "prev":
+                pyautogui.press('up')
+            elif pos == "-1":
+                pyautogui.press('end')
+            else:
+                n = int(pos)
+                pyautogui.press('home')
+                time.sleep(0.2)
+                for _ in range(n - 1):
+                    pyautogui.press('down')
+                    time.sleep(0.1)
+
+            time.sleep(0.3)
+
+            if action == "open":
+                pyautogui.press('enter')
+                time.sleep(0.3)
+                pyautogui.press('enter')  # Double enter to be sure
+
+        elif action_type == "scroll":
+            speak(response)
+            parts = arg.split("_")
+            direction = parts[0]
+            amount = int(parts[1]) if len(parts) > 1 else 3
+            if direction == "up":
+                pyautogui.scroll(amount)
+            elif direction == "down":
+                pyautogui.scroll(-amount)
+            elif direction == "left":
+                pyautogui.hscroll(-amount)
+            elif direction == "right":
+                pyautogui.hscroll(amount)
+
+        elif action_type == "nav":
+            import urllib.request
+            import urllib.error
+            speak(response)
+            url = f"http://localhost:7891/{arg}"
+            try:
+                with urllib.request.urlopen(url, timeout=0.5):
+                    pass
+            except urllib.error.URLError:
+                pass
+
+        elif action_type == "help":
+            speak(
+                "I'm Jim, your voice assistant. Here's what I can do. "
+                "Say open followed by an app name, like open browser or open calculator. "
+                "Say search for, followed by what you want, to search Google. "
+                "Say find file or open file, to search in file explorer. "
+                "Say go to, followed by a website name, like go to youtube. "
+                "I can navigate tabs with next tab, previous tab, close tab, new tab. "
+                "I can scroll up, scroll down, page up, page down, go to top or bottom. "
+                "I can go back, go forward, refresh the page. "
+                "Say click or click here to click at the cursor position. "
+                "Say click first link, click second link to click links on a page. "
+                "I can also take screenshots, switch windows, and control volume. "
+                "Say go to sleep to pause me. Say hey Jim or wake up to activate me again."
+            )
+
+        elif action_type == "sleep":
+            speak(response)
+            self._state = STATE_SLEEPING
+            logger.info("  Jim entering sleep mode")
+
+
+# ──────────────────────────────────────────────
+# ENTRY POINT
+# ──────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Jim -- Interactive Voice Assistant"
+    )
+    parser.add_argument("--no-attention", action="store_true",
+                        help="Disable attention gating (always listen)")
+    args = parser.parse_args()
+
+    assistant = VoiceAssistant(
+        require_attention=not args.no_attention,
+    )
+    assistant.start()
+
+    logger.info("Jim assistant running. Press Ctrl+C to stop.")
+    try:
+        while assistant.is_alive():
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        assistant.stop()
+        logger.info("Stopped.")
+
+
+if __name__ == "__main__":
+    main()
