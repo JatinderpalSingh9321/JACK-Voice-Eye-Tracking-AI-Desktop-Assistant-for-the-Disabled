@@ -53,3 +53,8 @@ data/*.task
 
 # Scikit-learn model files (very large)
 data/models/*.pkl
+
+# Kokoro TTS models
+models/kokoro/
+*.onnx
+*.bin

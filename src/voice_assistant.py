@@ -48,40 +48,74 @@ logger = setup_logger("jim")
 
 
 # ──────────────────────────────────────────────
-# TEXT-TO-SPEECH (Windows SAPI5 via PowerShell)
+# TEXT-TO-SPEECH (Kokoro ONNX & Windows SAPI5)
 # ──────────────────────────────────────────────
 
+try:
+    import sounddevice as sd
+    from kokoro_onnx import Kokoro
+    
+    kokoro_model_path = os.path.join(PROJECT_ROOT, "models", "kokoro", "kokoro-v1.0.onnx")
+    kokoro_voices_path = os.path.join(PROJECT_ROOT, "models", "kokoro", "voices-v1.0.bin")
+    
+    if os.path.exists(kokoro_model_path) and os.path.exists(kokoro_voices_path):
+        _kokoro_tts = Kokoro(kokoro_model_path, kokoro_voices_path)
+        logger.info("Kokoro TTS initialized successfully.")
+    else:
+        _kokoro_tts = None
+        logger.warning("Kokoro TTS model files not found. Falling back to SAPI5.")
+except ImportError:
+    _kokoro_tts = None
+    logger.warning("kokoro_onnx or sounddevice not installed. Falling back to SAPI5.")
+except Exception as e:
+    _kokoro_tts = None
+    logger.error(f"Error initializing Kokoro TTS: {e}")
+
+_speak_lock = threading.Lock()
+
 def speak(text: str):
-    """Speak text using Windows SAPI5. Uses direct COM with zero latency, falling back to PowerShell if needed."""
+    """Speak text using Kokoro TTS (high quality) or fallback to Windows SAPI5."""
     logger.info(f"  [Jim]: \"{text}\"")
     
-    # Try direct COM first for 0ms start latency
-    try:
-        try:
-            pythoncom.CoInitialize()
-        except Exception:
-            pass # Already initialized in this thread
-        
-        voice = win32com.client.Dispatch("SAPI.SpVoice")
-        voice.Speak(text)
-        return
-    except Exception as e:
-        logger.debug(f"Direct SAPI5 COM speech failed, falling back to PowerShell: {e}")
+    with _speak_lock:
+        if _kokoro_tts is not None:
+            try:
+                # Use a clear American Male voice by default
+                samples, sample_rate = _kokoro_tts.create(text, voice="am_michael", speed=1.0, lang="en-us")
+                sd.play(samples, sample_rate)
+                sd.wait()
+                return
+            except Exception as e:
+                logger.error(f"Kokoro TTS generation failed, falling back to SAPI5: {e}")
+                # Fallthrough to SAPI5...
 
-    # Fallback to PowerShell subprocess
-    safe = text.replace("'", "''")
-    cmd = (
-        f"powershell -Command \""
-        f"Add-Type -AssemblyName System.Speech; "
-        f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-        f"$s.Rate = 1; "
-        f"$s.Speak('{safe}')\""
-    )
-    try:
-        subprocess.run(cmd, shell=True, timeout=30,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception as e:
-        logger.error(f"  TTS error: {e}")
+        # Try direct COM first for 0ms start latency fallback
+        try:
+            try:
+                pythoncom.CoInitialize()
+            except Exception:
+                pass # Already initialized in this thread
+            
+            voice = win32com.client.Dispatch("SAPI.SpVoice")
+            voice.Speak(text)
+            return
+        except Exception as e:
+            logger.debug(f"Direct SAPI5 COM speech failed, falling back to PowerShell: {e}")
+
+        # Fallback to PowerShell subprocess
+        safe = text.replace("'", "''")
+        cmd = (
+            f"powershell -Command \""
+            f"Add-Type -AssemblyName System.Speech; "
+            f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            f"$s.Rate = 1; "
+            f"$s.Speak('{safe}')\""
+        )
+        try:
+            subprocess.run(cmd, shell=True, timeout=30,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            logger.error(f"  TTS error: {e}")
 
 
 # ──────────────────────────────────────────────
@@ -366,6 +400,10 @@ VOICE_COMMANDS = {
     "stop listening":      ("sleep", None, "Going to sleep. Say wake up Jim when you need me."),
     "go to sleep":         ("sleep", None, "Going to sleep. Say wake up Jim when you need me."),
     "sleep":               ("sleep", None, "Going to sleep. Say wake up Jim when you need me."),
+    "close the assistant": ("stop_assistant", None, "Shutting down. Goodbye!"),
+    "stop the assistant":  ("stop_assistant", None, "Shutting down. Goodbye!"),
+    "close assistant":     ("stop_assistant", None, "Shutting down. Goodbye!"),
+    "stop assistant":      ("stop_assistant", None, "Shutting down. Goodbye!"),
 
     # ── Dynamic Launchers ──
     "launch blinking":        ("launch_blinking", None, "Launching EOG blink mechanism"),
@@ -448,6 +486,8 @@ WAKE_PHRASES = [
     "a jim", "a gym",
     # "wake up" alone (no name needed)
     "wake up",
+    # Name only
+    "jim", "gym", "gem", "tim",
     # Observed Google Speech mishears
     "breakup gym", "break up gym", "breakup jim",
     "makeup gym", "make up gym",
@@ -1030,6 +1070,10 @@ class VoiceAssistant(threading.Thread):
             speak(response)
             self._state = STATE_SLEEPING
             logger.info("  Jim entering sleep mode")
+
+        elif action_type == "stop_assistant":
+            speak(response)
+            self.stop()
 
         elif action_type == "launch_blinking":
             if self.eog_thread and self.eog_thread.is_alive():
