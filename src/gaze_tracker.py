@@ -73,6 +73,12 @@ L_EYE_BOT = 145
 R_EYE_TOP = 386
 R_EYE_BOT = 374
 
+# Additional left/right eye vertical landmarks for per-eye EAR
+L_EYE_TOP2 = 158
+L_EYE_BOT2 = 153
+R_EYE_TOP2 = 385
+R_EYE_BOT2 = 380
+
 # Head pose landmarks
 NOSE_TIP         = 1
 CHIN             = 152
@@ -120,6 +126,35 @@ class GazeTracker(threading.Thread):
         self._cal_xmax = None
         self._cal_ymin = None
         self._cal_ymax = None
+
+        # ── Click-gesture state ──
+        # EAR thresholds (with hysteresis gap to prevent chatter)
+        self._EAR_CLOSED = 0.065   # EAR below this → eye counts as closed
+        self._EAR_OPEN   = 0.155   # EAR above this → eye counts as open (hysteresis)
+
+        # Frame-count thresholds (at ~30 fps)
+        self._MIN_CLOSED_FRAMES = 2  # Eye must be closed this many consecutive frames to confirm
+        self._MIN_OPEN_FRAMES   = 6  # Eye must be open this many consecutive frames before wink fires
+
+        # Per-eye consecutive-frame counters
+        self._l_closed_frames = 0
+        self._r_closed_frames = 0
+        self._l_open_frames   = 10   # Start "confirmed open"
+        self._r_open_frames   = 10
+
+        # Wink: fire once per gesture (reset when eye re-opens)
+        self._l_wink_armed = True   # True → allowed to fire next wink
+        self._r_wink_armed = True
+
+        # Cooldown between any click events
+        self._click_cooldown = 0.8
+        self._last_click_t   = 0.0
+
+        # Double-blink: track COMPLETE blink cycles (close + fully reopen)
+        self._blink_cycle_times  = []   # Timestamp of each completed blink cycle
+        self._both_confirmed_closed = False
+        self._eyes_reopened_after_blink = True  # Must reopen fully between counted blinks
+        self._DOUBLE_BLINK_WINDOW = 1.2  # Max seconds between two blink cycles
 
     def run(self):
         import mediapipe as mp
@@ -200,7 +235,10 @@ class GazeTracker(threading.Thread):
  
                 is_attentive = eyes_open and looking_at_screen and in_range
                 attention.is_attentive = is_attentive
- 
+
+                # ── Wink / double-blink click detection (always active when face visible) ──
+                self._detect_clicks(lm)
+
                 # ── Calculate gaze from iris position ──
                 if is_attentive:
                     gx, gy = self._calc_gaze(lm)
@@ -246,6 +284,111 @@ class GazeTracker(threading.Thread):
         self._running = False
 
     # ── Internal methods ──────────────────────────
+
+    def _per_eye_ear(self, lm):
+        """Return (left_EAR, right_EAR) using per-eye vertical span / horizontal span."""
+        def ear(top1, bot1, top2, bot2, outer, inner):
+            v1 = abs(lm[top1].y - lm[bot1].y)
+            v2 = abs(lm[top2].y - lm[bot2].y)
+            h  = abs(lm[outer].x - lm[inner].x)
+            return (v1 + v2) / (2.0 * h + 1e-6)
+
+        l_ear = ear(L_EYE_TOP, L_EYE_BOT, L_EYE_TOP2, L_EYE_BOT2, L_EYE_OUTER, L_EYE_INNER)
+        r_ear = ear(R_EYE_TOP, R_EYE_BOT, R_EYE_TOP2, R_EYE_BOT2, R_EYE_OUTER, R_EYE_INNER)
+        return l_ear, r_ear
+
+    def _detect_clicks(self, lm):
+        """Detect wink / double-blink gestures and fire mouse clicks.
+
+        Uses frame-count hysteresis so noisy, partial, or brief eye movements
+        cannot trigger false positives.
+
+        Gesture definitions:
+          Left wink   – left eye closed ≥ MIN_CLOSED_FRAMES while right stays open
+                        → left click fires once the left eye REOPENS
+          Right wink  – right eye closed ≥ MIN_CLOSED_FRAMES while left stays open
+                        → left click fires once the right eye REOPENS
+          Double blink – two complete blink cycles (close+reopen+close+reopen)
+                         both eyes, within DOUBLE_BLINK_WINDOW seconds
+                        → double click
+        """
+        now = time.time()
+        l_ear, r_ear = self._per_eye_ear(lm)
+
+        # ── Update per-eye frame counters with hysteresis ──
+        if l_ear < self._EAR_CLOSED:
+            self._l_closed_frames += 1
+            self._l_open_frames    = 0
+        elif l_ear > self._EAR_OPEN:
+            self._l_open_frames    += 1
+            self._l_closed_frames   = 0
+        # In the hysteresis zone: keep existing counts unchanged
+
+        if r_ear < self._EAR_CLOSED:
+            self._r_closed_frames += 1
+            self._r_open_frames    = 0
+        elif r_ear > self._EAR_OPEN:
+            self._r_open_frames    += 1
+            self._r_closed_frames   = 0
+
+        # Confirmed states
+        l_confirmed_closed = self._l_closed_frames >= self._MIN_CLOSED_FRAMES
+        r_confirmed_closed = self._r_closed_frames >= self._MIN_CLOSED_FRAMES
+        l_confirmed_open   = self._l_open_frames   >= self._MIN_OPEN_FRAMES
+        r_confirmed_open   = self._r_open_frames   >= self._MIN_OPEN_FRAMES
+        both_confirmed_closed = l_confirmed_closed and r_confirmed_closed
+
+        # ── Double-blink: count complete blink CYCLES (close → reopen) ──
+        if both_confirmed_closed and not self._both_confirmed_closed:
+            # Falling edge: both eyes just became confirmed-closed
+            self._both_confirmed_closed     = True
+            self._eyes_reopened_after_blink = False   # Must fully reopen before next count
+
+        if not both_confirmed_closed and self._both_confirmed_closed:
+            # Rising edge: eyes coming back open
+            if l_confirmed_open and r_confirmed_open:
+                # Full blink cycle complete
+                self._both_confirmed_closed     = False
+                self._eyes_reopened_after_blink = True
+                self._blink_cycle_times.append(now)
+                # Prune old cycles outside the window
+                self._blink_cycle_times = [
+                    t for t in self._blink_cycle_times
+                    if now - t <= self._DOUBLE_BLINK_WINDOW
+                ]
+                if (len(self._blink_cycle_times) >= 2
+                        and now - self._last_click_t >= self._click_cooldown):
+                    logger.info(f"  [Click] Double blink → double click")
+                    pyautogui.doubleClick(_pause=False)
+                    self._last_click_t      = now
+                    self._blink_cycle_times = []
+
+        # ── Wink detection (only when it is NOT a full blink) ──
+        if not both_confirmed_closed:
+
+            # Left wink: left confirmed-closed, right confirmed-open
+            if l_confirmed_closed and r_confirmed_open:
+                if (self._l_wink_armed
+                        and now - self._last_click_t >= self._click_cooldown):
+                    logger.info(f"  [Click] Left wink (L_EAR={l_ear:.3f}, R_EAR={r_ear:.3f}) → left click")
+                    pyautogui.click(button='left', _pause=False)
+                    self._last_click_t = now
+                    self._l_wink_armed = False   # Disarm until eye fully reopens
+
+            # Right wink: right confirmed-closed, left confirmed-open
+            if r_confirmed_closed and l_confirmed_open:
+                if (self._r_wink_armed
+                        and now - self._last_click_t >= self._click_cooldown):
+                    logger.info(f"  [Click] Right wink (L_EAR={l_ear:.3f}, R_EAR={r_ear:.3f}) → left click")
+                    pyautogui.click(button='left', _pause=False)
+                    self._last_click_t = now
+                    self._r_wink_armed = False   # Disarm until eye fully reopens
+
+        # Re-arm winks once eye has fully reopened (confirmed-open)
+        if l_confirmed_open:
+            self._l_wink_armed = True
+        if r_confirmed_open:
+            self._r_wink_armed = True
 
     def _check_eyes_open(self, lm) -> bool:
         """Check Eye Aspect Ratio (EAR) — closed eyes = not attentive."""
