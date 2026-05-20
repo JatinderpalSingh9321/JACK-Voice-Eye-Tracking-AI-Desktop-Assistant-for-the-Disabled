@@ -548,8 +548,10 @@ class VoiceAssistant(threading.Thread):
 
         # Speech recognizer
         self._recognizer = sr.Recognizer()
-        self._recognizer.energy_threshold = 400
-        self._recognizer.dynamic_energy_threshold = False
+        self._recognizer.energy_threshold = 300
+        self._recognizer.dynamic_energy_threshold = True
+        self._recognizer.dynamic_energy_adjustment_damping = 0.15
+        self._recognizer.dynamic_energy_ratio = 1.5
         self._recognizer.pause_threshold = 0.8
 
     def _listen(self, mic, timeout=5, phrase_time_limit=6) -> str:
@@ -566,7 +568,28 @@ class VoiceAssistant(threading.Thread):
             try:
                 text = self._recognizer.recognize_google(audio, language="en-IN")
                 logger.info(f"  >>> YOU SAID: \"{text}\"")
-                return text.lower().strip()
+                cleaned = text.lower().strip()
+                
+                # Dynamic phonetic normalizer for maximum accuracy
+                replacements = [
+                    ("veki veki", "wakey wakey"),
+                    ("weki weki", "wakey wakey"),
+                    ("high gym", "hi jim"),
+                    ("high jim", "hi jim"),
+                    ("hey gym", "hey jim"),
+                    ("wake up gym", "wake up jim"),
+                    ("wake up gem", "wake up jim"),
+                    ("wake up tim", "wake up jim"),
+                    ("gym", "jim"),
+                    ("gem", "jim"),
+                    ("veki", "wakey"),
+                    ("weki", "wakey"),
+                ]
+                for old, new in replacements:
+                    if old in cleaned:
+                        cleaned = cleaned.replace(old, new)
+                
+                return cleaned
             except sr.UnknownValueError:
                 logger.info("  (could not understand)")
                 return ""
@@ -598,6 +621,12 @@ class VoiceAssistant(threading.Thread):
         mic = sr.Microphone()
         mic_source = mic.__enter__()
         logger.info("  Microphone opened")
+        logger.info("  Calibrating microphone for ambient noise... (1 second)")
+        try:
+            self._recognizer.adjust_for_ambient_noise(mic_source, duration=1.0)
+            logger.info(f"  Microphone calibrated. Dynamic energy threshold set to: {self._recognizer.energy_threshold:.1f}")
+        except Exception as e:
+            logger.warning(f"  Microphone calibration failed: {e}")
 
         logger.info("=" * 55)
         logger.info("  Jim Voice Assistant -- READY")
