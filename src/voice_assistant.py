@@ -404,14 +404,14 @@ VOICE_COMMANDS = {
     "stop the assistant":  ("stop_assistant", None, "Shutting down. Goodbye!"),
     "close assistant":     ("stop_assistant", None, "Shutting down. Goodbye!"),
     "stop assistant":      ("stop_assistant", None, "Shutting down. Goodbye!"),
+    "exit application":    ("stop_assistant", None, "Shutting down. Goodbye!"),
+    "quit application":    ("stop_assistant", None, "Shutting down. Goodbye!"),
 
     # ── Dynamic Launchers ──
     "launch blinking":        ("launch_blinking", None, "Launching EOG blink mechanism"),
     "start blinking":         ("launch_blinking", None, "Launching EOG blink mechanism"),
-    "stop blinking":          ("stop_blinking", None, "Stopping EOG blink mechanism"),
-    "close blinking":         ("stop_blinking", None, "Stopping EOG blink mechanism"),
-    "stop eog":               ("stop_blinking", None, "Stopping EOG blink mechanism"),
-    "close eog":              ("stop_blinking", None, "Stopping EOG blink mechanism"),
+    "stop blinking":       ("stop_blinking", "", "Stopping EOG control"),
+    "stop eog":            ("stop_blinking", "", "Stopping EOG control"),
     "launch eye tracking":    ("launch_gaze", None, "Launching gaze tracking mechanism"),
     "launch eye cursor":      ("launch_gaze", None, "Launching gaze tracking mechanism"),
     "start eye tracking":     ("launch_gaze", None, "Launching gaze tracking mechanism"),
@@ -420,6 +420,13 @@ VOICE_COMMANDS = {
     "stop eye cursor":        ("stop_gaze", None, "Stopping gaze tracking mechanism"),
     "close eye tracking":     ("stop_gaze", None, "Stopping gaze tracking mechanism"),
     "close eye cursor":       ("stop_gaze", None, "Stopping gaze tracking mechanism"),
+
+    # ── UI Commands ──
+    "open assistant settings": ("ui_command", "open_settings", "Opening settings panel"),
+    "open settings":           ("ui_command", "open_settings", "Opening settings panel"),
+    "close assistant settings":("ui_command", "close_settings", "Closing settings panel"),
+    "close settings":          ("ui_command", "close_settings", "Closing settings panel"),
+    "hide settings":           ("ui_command", "close_settings", "Closing settings panel"),
 }
 
 # Dynamic command prefixes — these extract a query from the speech
@@ -531,10 +538,12 @@ class VoiceAssistant(threading.Thread):
     Uses Google Speech Recognition (en-IN) + Windows SAPI5 TTS.
     """
 
-    def __init__(self, require_attention=True, port="COM7", **kwargs):
+    def __init__(self, require_attention=True, port="COM7", ui_callback=None, state_callback=None, **kwargs):
         super().__init__(daemon=True, name="VoiceAssistant")
         self.require_attention = require_attention
         self.port = port
+        self.ui_callback = ui_callback
+        self.state_callback = state_callback
         self._running = False
         self._state = STATE_IDLE
         self.gaze_tracker = None
@@ -574,11 +583,19 @@ class VoiceAssistant(threading.Thread):
             logger.error(f"  Listen error: {type(e).__name__}: {e}")
             return ""
 
+    def set_state(self, new_state: str):
+        self._state = new_state
+        if self.state_callback:
+            self.state_callback(new_state)
+
     def run(self):
         self._running = True
+        self.set_state(STATE_IDLE)
 
         # Greeting BEFORE opening mic
+        if self.state_callback: self.state_callback("speaking")
         speak("Jim assistant is online. Say wake up Jim or hey Jim to activate me.")
+        if self.state_callback: self.state_callback(STATE_IDLE)
 
         # Open mic
         mic = sr.Microphone()
@@ -606,7 +623,7 @@ class VoiceAssistant(threading.Thread):
                 # ── SLEEPING ──
                 if self._state == STATE_SLEEPING:
                     if _contains_wake(text):
-                        self._state = STATE_IDLE
+                        self.set_state(STATE_IDLE)
                         logger.info("  Jim woke up from sleep")
                     else:
                         continue
@@ -616,18 +633,23 @@ class VoiceAssistant(threading.Thread):
                     if _contains_wake(text):
                         after_wake = _strip_wake(text)
                         if after_wake and len(after_wake) > 2:
+                            if self.state_callback: self.state_callback("speaking")
                             speak("What can I help you with today?")
+                            self.set_state(STATE_IDLE)
                             self._process_command(after_wake)
                         else:
-                            self._state = STATE_LISTENING
+                            self.set_state(STATE_LISTENING)
+                            if self.state_callback: self.state_callback("speaking")
                             speak("What can I help you with today?")
+                            if self.state_callback: self.state_callback(STATE_LISTENING)
                             cmd = self._listen(mic_source, timeout=8, phrase_time_limit=8)
                             if cmd:
                                 logger.info(f"  >>> COMMAND: \"{cmd}\"")
                                 self._process_command(cmd)
                             else:
+                                if self.state_callback: self.state_callback("speaking")
                                 speak("I didn't catch that. Say hey Jim to try again.")
-                            self._state = STATE_IDLE
+                            self.set_state(STATE_IDLE)
                     continue
 
         except KeyboardInterrupt:
@@ -637,6 +659,7 @@ class VoiceAssistant(threading.Thread):
                 mic.__exit__(None, None, None)
             except Exception:
                 pass
+            if self.state_callback: self.state_callback("speaking")
             speak("Jim signing off. Goodbye.")
             logger.info("Jim assistant stopped")
 
@@ -676,6 +699,8 @@ class VoiceAssistant(threading.Thread):
     def _execute_dynamic(self, action: str, query: str):
         """Execute dynamic commands that take a query parameter."""
         import pyautogui
+        
+        if self.state_callback: self.state_callback("speaking")
 
         if action == "search_smart":
             # Smart search: detect target app from suffix
@@ -930,9 +955,17 @@ class VoiceAssistant(threading.Thread):
             except Exception as e:
                 logger.error(f"Failed to dynamically open application via Start Menu search: {e}")
 
-    def _execute(self, action_type: str, arg, response: str):
-        """Execute a static voice command."""
+    def _execute(self, action_type: str, arg: str, response: str):
+        """Execute a predefined action."""
         import pyautogui
+        
+        if action_type == "ui_command":
+            if self.ui_callback:
+                speak(response)
+                self.ui_callback(arg)
+            else:
+                speak("UI callback is not registered.")
+            return
 
         if action_type == "launch":
             speak(response)
