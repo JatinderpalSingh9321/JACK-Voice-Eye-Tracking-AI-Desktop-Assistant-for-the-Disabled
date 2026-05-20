@@ -336,16 +336,10 @@ class App:
         ctrls = tk.Frame(card, bg=CARD, pady=24, padx=24)
         ctrls.pack(fill="x")
 
-        tk.Label(ctrls, text="COM PORT", font=MONO_SM, bg=CARD, fg=DIM).grid(row=0, column=0, sticky="w", pady=(0,4))
-        self._va_port = tk.StringVar(value="COM7")
-        ports = self._list_ports()
-        cb = ttk.Combobox(ctrls, textvariable=self._va_port, values=ports, width=15, font=MONO)
-        cb.grid(row=1, column=0, sticky="w", padx=(0, 32))
-
         self._va_attention = tk.BooleanVar(value=False)
         tk.Checkbutton(ctrls, text="Attention Gating", variable=self._va_attention,
                        font=FONT_UI, bg=CARD, fg=TEXT, selectcolor=BG, activebackground=CARD, activeforeground=ACCENT
-                       ).grid(row=1, column=1, sticky="w")
+                       ).grid(row=1, column=0, sticky="w")
 
         # Buttons
         btns = tk.Frame(card, bg=CARD, pady=24, padx=24)
@@ -458,14 +452,12 @@ class App:
             self._va_running = False
             return
             
-        port = self._va_port.get().strip() or None
         attention = self._va_attention.get()  # Checkbox value directly maps to require_attention
 
         def _run():
             try:
                 # Pass ui_callback for voice-activated dashboard
                 self._va = VoiceAssistant(
-                    port=port, 
                     require_attention=attention, 
                     ui_callback=self._handle_ui_command,
                     state_callback=self._update_orb_state
@@ -523,13 +515,7 @@ class App:
         self._gaze_running = False
         self._ui_sync_gaze(False)
 
-    # ── Helpers ───────────────────────────────────
-    def _list_ports(self):
-        try:
-            import serial.tools.list_ports
-            return [p.device for p in serial.tools.list_ports.comports()]
-        except Exception:
-            return ["COM7"]
+
 
     def on_close(self):
         self._stop_va()

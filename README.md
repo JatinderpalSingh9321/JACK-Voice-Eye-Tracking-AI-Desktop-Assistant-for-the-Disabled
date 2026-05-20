@@ -1,7 +1,7 @@
 <p align="center">
-  <h1 align="center">🧠 Non-Invasive BCI for Assistive Control</h1>
+  <h1 align="center">👁️ NavTools: Assistive Gaze Tracking & Voice Assistant</h1>
   <p align="center">
-    <strong>Affordable Brain-Computer Interface using Upside Down Labs + Deep Learning</strong>
+    <strong>A Hands-Free Neural-Interface-Like Assistive System using MediaPipe Gaze Tracking and Offline Voice Command Orchestration</strong>
   </p>
   <p align="center">
     Group No. 7 &nbsp;·&nbsp; 8th Semester Major Project &nbsp;·&nbsp; 2026
@@ -10,9 +10,9 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.9+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
-  <img src="https://img.shields.io/badge/TensorFlow-2.x-FF6F00?style=flat-square&logo=tensorflow&logoColor=white" alt="TensorFlow">
-  <img src="https://img.shields.io/badge/Flask-REST%20API-000000?style=flat-square&logo=flask&logoColor=white" alt="Flask">
-  <img src="https://img.shields.io/badge/Hardware-Upside%20Down%20Labs-blueviolet?style=flat-square" alt="Hardware">
+  <img src="https://img.shields.io/badge/MediaPipe-Camera-00C7B7?style=flat-square" alt="MediaPipe">
+  <img src="https://img.shields.io/badge/Tkinter-UI-blue?style=flat-square" alt="Tkinter">
+  <img src="https://img.shields.io/badge/Speech--Recognition-Offline%20TTS-green?style=flat-square" alt="Speech">
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License">
 </p>
 
@@ -21,55 +21,37 @@
 ## 📋 Table of Contents
 
 - [Overview](#-overview)
-- [Problem Statement](#-problem-statement)
 - [System Architecture](#-system-architecture)
-- [Hardware Requirements](#-hardware-requirements)
+- [Core Modules](#-core-modules)
+  - [Gaze Tracking and Clicking Gestures](#1-camera-based-gaze-tracking)
+  - [Jim Interactive Voice Assistant](#2-jim-interactive-voice-assistant)
 - [Software Setup](#-software-setup)
-- [Project Structure](#-project-structure)
-- [Quick Start](#-quick-start)
-- [Data Collection Protocol](#-data-collection-protocol)
-- [Preprocessing Pipeline](#-preprocessing-pipeline)
-- [Model Architecture](#-model-architecture)
-- [API Reference](#-api-reference)
-- [Real-Time Dashboard](#-real-time-dashboard)
-- [Expected Results](#-expected-results)
+- [How to Run](#-how-to-run)
+  - [Multimodal Launcher](#method-1-standalone-multimodal-console-launcher)
+  - [Tkinter Settings Dashboard](#method-2-tkinter-settings-dashboard)
+- [Unified State Management](#-unified-state-management)
+- [Voice Assistant Reference Guide](#-voice-assistant-reference-guide)
 - [Troubleshooting](#-troubleshooting)
-- [References](#-references)
 - [License](#-license)
 
 ---
 
 ## 🔬 Overview
 
-This project implements a **complete, end-to-end, non-invasive Brain-Computer Interface (BCI)** that enables paralyzed patients to generate assistive control commands using only their thoughts.
+**NavTools** is a completely non-invasive, premium assistive control suite that empowers individuals with physical impairments to operate computers hands-free. The system merges **webcam-based eye gaze tracking** with an **offline voice-activated assistant (Jim)**. 
 
-The system captures EEG signals during **motor imagery** (imagining hand movements), classifies them in real-time using a **1D Convolutional Neural Network**, and outputs control commands through a **live browser dashboard** — all powered by the affordable, open-hardware **Upside Down Labs BioAmp EXG Pill** kit.
+Unlike legacy biosignal-based interfaces (like EEG/EOG), NavTools requires **zero extra hardware**. It leverages standard computer webcams and microphones to deliver smooth cursor movement, rich facial-gesture-based clicking, and highly responsive voice command execution.
 
 ### Key Highlights
 
 | Feature | Details |
 |---------|---------|
-| 🎯 **Task** | Binary motor imagery classification (LEFT vs. RIGHT hand) |
-| 🧬 **Hardware** | Upside Down Labs BioAmp EXG Pill (~₹3,000–₹5,000) |
-| 🤖 **Main Model** | 1D-CNN (TensorFlow/Keras) |
-| 📊 **Baseline** | SVM with hand-crafted spectral features |
-| 🎓 **Evaluation** | Leave-One-Subject-Out (LOSO) cross-validation |
-| 📈 **Expected Accuracy** | 81–87% |
-| ⚡ **Inference Latency** | < 200 ms end-to-end |
-| 👥 **Dataset** | 6 subjects × 80 trials = 480 trials |
-| 🌐 **Interface** | Flask REST API + real-time browser dashboard |
-
----
-
-## 🎯 Problem Statement
-
-Millions of paralyzed individuals worldwide lack access to assistive technology:
-
-- **Invasive BCIs** (e.g., Neuralink): Effective but require surgery, cost $50,000+, available only in specialized centres.
-- **Commercial non-invasive BCIs**: Cost $1,000–$20,000, proprietary software, inaccessible in low-resource settings.
-- **No technology at all**: The reality for most patients in developing countries.
-
-**This project bridges that gap** by combining an affordable open-hardware EEG kit with state-of-the-art deep learning, creating a deployable BCI system for under ₹5,000 — practical for district hospitals, rehabilitation centres, and rural healthcare settings.
+| 👁️ **Gaze Control** | MediaPipe Face Mesh landmark tracking for cursor positioning |
+| ⚡ **Gestures** | Blink and Wink gesture recognition for clicks (Left, Right, Double) |
+| 🎙️ **Voice Command** | 80+ pre-configured offline/online speech macros (Jim Assistant) |
+| 🎛️ **Configuration** | Unified Tkinter dark-mode settings panel for calibration |
+| 🧠 **Attention Gating** | Thread-safe inter-module synchronization via shared state |
+| 🗣️ **TTS System** | High-fidelity Kokoro ONNX voice generation with local SAPI5 fallback |
 
 ---
 
@@ -77,67 +59,60 @@ Millions of paralyzed individuals worldwide lack access to assistive technology:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    LAYER 1: SIGNAL ACQUISITION                  │
+│                    INPUT LAYERS (NO EXTRA HARDWARE)             │
 │                                                                 │
-│  ┌──────────────────┐    ┌───────────┐    ┌──────────────────┐  │
-│  │  EEG Electrodes  │───▶│  BioAmp   │───▶│  Arduino Uno     │  │
-│  │  (10-20 System)  │    │  EXG Pill │    │  (250 Hz ADC)    │  │
-│  └──────────────────┘    └───────────┘    └────────┬─────────┘  │
-│                                                     │ USB Serial│
-├─────────────────────────────────────────────────────┼───────────┤
-│                    LAYER 2: PROCESSING              │           │
-│                                                     ▼           │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │                   Python Pipeline                        │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌───────────┐  │   │
-│  │  │ Notch   │─▶│Bandpass │─▶│  ICA    │─▶│ Baseline  │  │   │
-│  │  │ 50 Hz   │  │ 8-30 Hz │  │ Cleanup │  │ Correct   │  │   │
-│  │  └─────────┘  └─────────┘  └─────────┘  └─────┬─────┘  │   │
-│  │                                                │        │   │
-│  │                            ┌────────────────────▼──────┐ │   │
-│  │                            │   1D-CNN / SVM Model      │ │   │
-│  │                            │   Prediction + Confidence │ │   │
-│  │                            └────────────────────┬──────┘ │   │
-│  └─────────────────────────────────────────────────┼────────┘   │
-├─────────────────────────────────────────────────────┼───────────┤
-│                    LAYER 3: INTERFACE               │           │
-│                                                     ▼           │
-│  ┌──────────────────┐    ┌──────────────────────────────────┐   │
-│  │  Flask REST API  │───▶│  Real-Time Browser Dashboard     │   │
-│  │  localhost:5000   │    │  • Live EEG waveform             │   │
-│  │  /predict         │    │  • LEFT / RIGHT prediction       │   │
-│  │  /calibrate       │    │  • Confidence bar                │   │
-│  └──────────────────┘    └──────────────────────────────────┘   │
+│       ┌───────────────┐                  ┌─────────────────┐    │
+│       │ Standard Mic  │                  │ Standard Webcam │    │
+│       └───────┬───────┘                  └────────┬────────┘    │
+│               │ Speech Audio                      │ Video Frames │
+├───────────────┼───────────────────────────────────┼─────────────┤
+│               ▼                                   ▼             │
+│   ┌───────────────────────┐           ┌─────────────────────┐   │
+│   │  Speech Recognition   │           │ MediaPipe Landmark  │   │
+│   │  & Command Processing │           │  & Gesture Engine   │   │
+│   └───────────┬───────────┘           └───────────┬─────────┘   │
+│               │ Command Signal                    │ (X, Y) Coordinates
+│               │                                   │ + EAR Blinks
+├───────────────┼───────────────────────────────────┼─────────────┤
+│               ▼                                   ▼             │
+│    ┌────────────────────────────────────────────────────────┐   │
+│    │        Thread-Safe State Synchronization (Attention)   │   │
+│    │  - Attentive Eye State Gate   - Shared Volume/Cursor   │   │
+│    └───────────────────────────┬────────────────────────────┘   │
+│                                │                                │
+│                                ▼                                │
+├─────────────────────────────────────────────────────────────────┤
+│                    OUTPUT INTERFACES & CONTROL                  │
+│                                                                 │
+│     ┌───────────────────┐             ┌─────────────────────┐   │
+│     │   Kokoro ONNX /   │             │   PyAutoGUI OS      │   │
+│     │   SAPI5 Speech    │             │   System Controls   │   │
+│     └───────────────────┘             └─────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🔧 Hardware Requirements
+## 🔌 Core Modules
 
-### Components Checklist
+### 1. Camera-Based Gaze Tracking
 
-| Component | Purpose | Est. Cost |
-|-----------|---------|-----------|
-| BioAmp EXG Pill | Biosignal amplifier (µV-range) | Included in kit |
-| Gel electrodes (×3) | Scalp EEG contact | Included in kit |
-| Reference electrode (clip) | Earlobe reference | Included in kit |
-| Ground electrode (clip) | Earlobe / Fpz ground | Included in kit |
-| Snap-to-lead wires | Electrode to amplifier | Included in kit |
-| Arduino Uno / Nano | ADC + USB serial streaming | ₹500–₹800 |
-| USB-A to USB-B cable | Arduino ↔ Laptop | Included |
-| Electrode gel (Ten20) | Improve electrode contact | ₹200–₹500 |
-| **Total** | | **~₹3,000–₹5,000** |
+The **Gaze Tracker** acts as a virtual mouse by tracking the user's face and eyes using MediaPipe's High-Fidelity Landmark Model (`face_landmarker.task`). 
 
-### Electrode Placement (Motor Imagery)
+* **Exponential Moving Average (EMA) Smoothing:** Eliminates natural micro-saccades and camera jitter to provide a smooth, organic cursor movement.
+* **Eye Aspect Ratio (EAR) Clicking:** Detects natural blinks and winks for full mouse emulation:
+  * 😉 **Left Eye Wink:** Executes a **Left Mouse Click**.
+  * 😉 **Right Eye Wink:** Executes a **Right Mouse Click**.
+  * 👁️ **Double Blink:** Executes a **Double-Click**.
+  * ⏱️ **Extended Hold Blink:** Triggers mouse **Click & Drag**.
 
-Follow the **10-20 international system**, focusing on motor cortex channels:
+### 2. Jim Interactive Voice Assistant
 
-```
-IN+ (Signal): C3 ( Left Motor Cortex)
-IN- (Signal): C4 ( Right Motor Cortex)
-Ground:      Fpz (Forehead midline) or Earlobe
-```
+**Jim** is an offline-first interactive digital companion that processes vocal commands. It features:
+* **Holographic Voice Orb Visualizer:** Provides real-time feedback with color-coded states (Aqua for listening, Cyan for thinking, Green for speaking, Red for sleeping).
+* **Smart Calculation Parser:** Extracts dynamic spoken expressions (e.g., *"calculate fifteen times three plus four"*) and executes them safely, focusing existing calculator instances if open.
+* **Smart Web & Local Search:** Supports targeted phrases (e.g., *"search Google for python guides"*, *"find file design_specifications"*, *"type hello world"*).
+* ** Kokoro TTS engine:** Integrates lightweight ONNX models to produce crystal-clear human-like speech output offline.
 
 ---
 
@@ -145,363 +120,109 @@ Ground:      Fpz (Forehead midline) or Earlobe
 
 ### Prerequisites
 
-- Python 3.9+
-- Arduino IDE (for firmware upload)
-- Modern web browser (Chrome recommended)
+* **OS:** Windows (preferred for direct pywin32 API system hooks).
+* **Python:** 3.9 through 3.11.
+* **Webcam & Microphone:** Any standard built-in or external USB devices.
 
 ### Installation
 
+1. **Clone the Repository:**
+   ```bash
+   git clone https://github.com/JatinderpalSingh9321/bci-assistive-control.git
+   cd bci-assistive-control
+   ```
+
+2. **Set Up Virtual Environment:**
+   ```bash
+   python -m venv venv
+   .\venv\Scripts\activate
+   ```
+
+3. **Install Refactored Dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+---
+
+## 🚀 How to Run
+
+NavTools offers two entry methods depending on your workflow:
+
+### Method 1: Standalone Multimodal Console Launcher
+Runs both the Eye Gaze Tracker and Voice Assistant as independent threads with console logs.
+
 ```bash
-# 1. Clone the repository
-git clone https://github.com/your-username/bci-assistive-control.git
-cd bci-assistive-control
+# Basic start (Gaze + Voice)
+python -m src.multimodal_launcher
 
-# 2. Create virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate        # Linux/Mac
-.\venv\Scripts\activate         # Windows
+# Start with a real-time webcam preview panel for camera calibration
+python -m src.multimodal_launcher --preview
 
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Verify installation
-python -c "import serial, mne, tensorflow, flask; print('✓ All dependencies OK')"
+# Disable specific modules
+python -m src.multimodal_launcher --no-gaze
 ```
 
-### `requirements.txt`
+### Method 2: Tkinter Settings Dashboard
+Launches a gorgeous, dark-themed GUI control panel. It allows configuring gaze EMA smoothing, choosing camera index inputs, toggling debug live previews, and managing Voice Assistant states.
 
-```
-numpy>=1.24
-scipy>=1.10
-pandas>=2.0
-matplotlib>=3.7
-seaborn>=0.12
-mne>=1.4
-scikit-learn>=1.2
-tensorflow>=2.12
-flask>=2.3
-flask-cors>=4.0
-pyserial>=3.5
-pygame>=2.5
+```bash
+python -m src.gui_app
 ```
 
 ---
 
-## 📁 Project Structure
+## 🧠 Unified State Management
 
-```
-bci-assistive-control/
-│
-├── data/
-│   ├── raw/                         # Raw EEG recordings per subject
-│   │   ├── subject_001/
-│   │   │   ├── session_01.npz       # numpy arrays: data (80×~1000), labels (80)
-│   │   │   └── session_01_meta.json # metadata: date, SNR, electrode notes
-│   │   └── subject_006/
-│   ├── preprocessed/
-│   │   └── all_clean_epochs.npz     # Cleaned, ready for ML
-│   └── models/
-│       ├── svm_model.pkl            # Trained SVM pipeline
-│       ├── cnn_model.h5             # Trained 1D-CNN
-│       └── results.csv              # Per-subject LOSO results
-│
-├── src/
-│   ├── acquisition.py               # Serial streaming from Upside Down Labs kit
-│   ├── experiment.py                # Motor imagery paradigm (Pygame)
-│   ├── preprocessing.py             # Filtering, epoching, artifact rejection
-│   ├── feature_extraction.py        # Band power, CSP features for SVM
-│   ├── models.py                    # SVM, 1D-CNN, LSTM definitions
-│   ├── evaluation.py               # LOSO cross-validation, metrics, plots
-│   ├── train.py                     # Training orchestration
-│   └── utils.py                     # Config and helpers
-│
-├── api/
-│   └── app.py                       # Flask REST API
-│
-├── frontend/
-│   └── dashboard.html               # Real-time browser dashboard
-│
-├── firmware/
-│   └── eeg_stream.ino               # Arduino sketch (250 Hz streaming)
-│
-├── notebooks/                       # Jupyter notebooks for exploration
-│   ├── 01_exploration.ipynb
-│   ├── 02_preprocessing.ipynb
-│   └── 03_model_training.ipynb
-│
-├── results/                         # Figures: confusion matrices, ROC, etc.
-├── README.md
-├── requirements.txt
-├── .gitignore
-└── LICENSE
-```
+To prevent cursor drift or voice triggers when the user is not actively looking at the screen, NavTools implements a thread-safe singleton state class, `AttentionState`. 
+
+If **Attention Gating** is enabled in the settings dashboard:
+1. **Attentive Calibration:** The eye gaze tracker checks if the user's pupils are focused on the monitor.
+2. **Signal Gating:** If the user looks away, `attention.is_attentive` is set to `False`.
+3. **Trigger Lockout:** The Voice Assistant pauses microphone streaming and cursor positioning freezes, preventing accidental command triggers.
+4. **Resumption:** Simply looking back at the screen immediately resumes cursor control and wake-word listening.
 
 ---
 
-## 🚀 Quick Start
+## 🎙️ Voice Assistant Reference Guide
 
-### Step 1: Flash Arduino Firmware
+Jim listens for the wake phrase **"wake up Jim"** or **"hey Jim"**. Once activated, you can speak any of the following pre-configured command classes:
 
-Open `firmware/eeg_stream.ino` in Arduino IDE and upload to your Arduino Uno.
+### Browser & Tab Navigation
+* *"open google"* / *"open youtube"* — Launches default web browsers to specified addresses.
+* *"new tab"* / *"close tab"* — Manages browser workspace tags.
+* *"next tab"* / *"previous tab"* — Cycles through active tabs.
+* *"go back"* / *"go forward"* / *"refresh page"* — Standard page controls.
 
-### Step 2: Verify Hardware Connection
+### Local Application Launchers
+* *"open calculator"* / *"open notepad"* / *"open control panel"* / *"open task manager"* / *"open terminal"* / *"open sticky notes"* — Instantly spawns built-in utilities.
+* *"open download folder"* / *"open documents"* / *"open my computer"* — Launches explorer paths.
+* *"open VS Code"* / *"open discord"* / *"open spotify"* / *"open photoshop"* — Launches third-party software dynamically from start menu indexing.
 
-```bash
-python -c "
-import serial, serial.tools.list_ports
-ports = list(serial.tools.list_ports.comports())
-for p in ports:
-    print(p.device, p.description)
-"
-```
+### Windows & System Controls
+* *"minimize window"* / *"maximize window"* / *"snap left"* / *"snap right"* — Organizes screen windows.
+* *"scroll down"* / *"scroll up"* / *"page up"* / *"page down"* — Smooth scroll simulation.
+* *"take screenshot"* — Opens Snipping Tool.
+* *"lock screen"* — Instantly locks the Windows user session.
+* *"volume up"* / *"volume down"* / *"mute"* — Controls audio devices.
 
-### Step 3: Check Signal Quality
-
-```bash
-python src/acquisition.py --check-quality
-```
-
-### Step 4: Collect Data
-
-```bash
-python src/experiment.py --subject 1
-```
-
-### Step 5: Preprocess
-
-```bash
-python src/preprocessing.py --all-subjects
-```
-
-### Step 6: Train Models
-
-```bash
-# SVM baseline
-python src/train.py --model svm
-
-# 1D-CNN (main model)
-python src/train.py --model cnn
-```
-
-### Step 7: Launch the System
-
-```bash
-# Terminal 1: Start API server
-python api/app.py
-
-# Terminal 2: Open dashboard
-# Navigate to frontend/dashboard.html in your browser
-```
-
----
-
-## 📡 Data Collection Protocol
-
-### Subject Requirements
-- **6 participants** (diverse demographics)
-- **80 trials per subject** (40 LEFT + 40 RIGHT, balanced)
-- **480 total trials**
-
-### Trial Timing
-
-```
-0s  ─── [RELAX]           "Ready" screen, subject rests
-2s  ─── [CUE]             Arrow LEFT or RIGHT displayed (1 sec)
-3s  ─── [MOTOR IMAGERY]   Imagine hand squeeze (4 sec) ← EEG RECORDED
-7s  ─── [REST]            Blank screen (2 sec recovery)
-9s  ─── [NEXT TRIAL]
-```
-
-### Session Protocol
-1. Written informed consent
-2. Electrode application + conductive gel
-3. 30-second resting baseline recording
-4. 5 practice trials (not recorded)
-5. 4 blocks × 20 trials (2-min breaks between blocks)
-6. Total duration: ~30 minutes per subject
-
----
-
-## 🔄 Preprocessing Pipeline
-
-Applied in strict order:
-
-| Step | Operation | Parameters | Purpose |
-|------|-----------|-----------|---------|
-| 1 | Notch filter | 50 Hz, Q=30 | Remove power line noise |
-| 2 | Band-pass filter | 8–30 Hz, 4th-order Butterworth | Isolate motor imagery bands |
-| 3 | ICA removal | ~15 components | Remove eye blinks, muscle artifacts |
-| 4 | Epoch extraction | 0–4 sec post-cue | Time-lock to imagery period |
-| 5 | Baseline correction | Subtract mean(0–0.5s) | Remove DC offset |
-| 6 | Artifact rejection | PTP > 150 µV → discard | Remove noisy trials |
-| 7 | Downsample | 250 → 125 Hz | Reduce dimensionality |
-
-**Quality target:** Retain > 75% of trials after rejection.
-
----
-
-## 🤖 Model Architecture
-
-### SVM Baseline
-
-```
-Input: 5 hand-crafted features per epoch
-  → Alpha band power (8–12 Hz)
-  → Beta band power (12–30 Hz)
-  → Spectral entropy
-  → Signal variance
-  → Mean absolute value
-  ↓
-StandardScaler → SVM (RBF kernel, C=1.0)
-  ↓
-Output: LEFT / RIGHT
-```
-
-### 1D-CNN (Primary Model)
-
-```
-Input: (500 timepoints, 1 channel)
-  ↓
-Conv1D(64, k=5, ReLU) → BatchNorm → Dropout(0.3)
-  ↓
-Conv1D(128, k=5, ReLU) → BatchNorm → MaxPool(2) → Dropout(0.3)
-  ↓
-Conv1D(64, k=3, ReLU) → GlobalAveragePooling1D
-  ↓
-Dense(128, ReLU) → Dropout(0.3)
-  ↓
-Dense(2, Softmax) → [LEFT | RIGHT]
-
-Optimizer:  Adam (lr=0.001)
-Loss:       Categorical cross-entropy
-Evaluation: LOSO cross-validation
-```
-
----
-
-## 🌐 API Reference
-
-**Base URL:** `http://localhost:5000`
-
-### `GET /health`
-
-Check API and model status.
-
-```json
-// Response
-{ "status": "ok", "models": ["cnn", "svm"] }
-```
-
-### `POST /predict`
-
-Classify an EEG epoch.
-
-```bash
-curl -X POST http://localhost:5000/predict \
-  -H "Content-Type: application/json" \
-  -d '{"epoch": [0.12, -0.34, 0.56, ...]}'
-```
-
-```json
-// Response
-{
-  "prediction": "LEFT",
-  "confidence": 0.82,
-  "probabilities": { "LEFT": 0.82, "RIGHT": 0.18 },
-  "latency_ms": 48.3
-}
-```
-
-### `POST /calibrate`
-
-Fine-tune the model for a specific user.
-
-```bash
-curl -X POST http://localhost:5000/calibrate \
-  -H "Content-Type: application/json" \
-  -d '{"epochs": [[...], [...]], "labels": [0, 1, 0, ...]}'
-```
-
-```json
-// Response
-{ "status": "calibrated", "n_samples": 30 }
-```
-
----
-
-## 📺 Real-Time Dashboard
-
-The browser dashboard (`frontend/dashboard.html`) provides:
-
-- **Live EEG Waveform** — Canvas-rendered real-time signal trace
-- **Prediction Output** — Large, color-coded LEFT / RIGHT display
-- **Confidence Score** — Percentage + inference latency
-- **Visual Styling** — Dark theme, glowing accents (cyan for LEFT, orange for RIGHT)
-
-To launch:
-```bash
-python api/app.py                    # Start the API
-# Open frontend/dashboard.html in Chrome
-```
-
----
-
-## 📈 Expected Results
-
-### Model Comparison (LOSO Cross-Validation)
-
-| Model | Accuracy | Latency | Recommended Use |
-|-------|----------|---------|-----------------|
-| SVM (RBF) | ~81% ± 2.5% | 25 ms | Live demo (fastest) |
-| 1D-CNN | ~85% ± 3.1% | 50 ms | Thesis main result |
-| LSTM | ~86% ± 2.8% | 100 ms | Bonus experiment |
-
-### Per-Subject Breakdown (Expected)
-
-| Subject | Accuracy | Notes |
-|---------|----------|-------|
-| 1 | ~82% | Good signal quality |
-| 2 | ~79% | Noisier, more blinks |
-| 3 | ~85% | Strong motor imagery |
-| 4 | ~81% | Average |
-| 5 | ~83% | Consistent |
-| 6 | ~80% | Average |
-| **Mean** | **~81.7% ± 2.2%** | |
-
-### System Latency
-
-| Stage | Time |
-|-------|------|
-| EEG epoch (4 sec) | 4,000 ms (required) |
-| Preprocessing | 50–100 ms |
-| CNN inference | 40–60 ms |
-| UI update | 10–20 ms |
-| **Total latency** | **< 200 ms ✓** |
+### Smart Dynamic Handlers
+* *"calculate [expression]"* — Solves equations vocally.
+* *"google search for [query]"* — Spawns browser with search results.
+* *"find file [filename]"* — Opens File Explorer with a structured query.
+* *"type [text]"* — Types text directly into the active cursor field.
+* *"close the assistant"* / *"exit application"* — Triggers an application-wide graceful exit.
 
 ---
 
 ## 🔧 Troubleshooting
 
-| Issue | Likely Cause | Fix |
-|-------|-------------|-----|
-| No serial data | Wrong COM port | Check Device Manager (Windows) or `ls /dev/tty*` (Linux) |
-| Flat signal | Loose electrode, no gel | Re-apply conductive gel, check clips |
-| 60/50 Hz noise | No notch filter / bad ground | Enable 50 Hz notch, check ground electrode |
-| Low accuracy (< 70%) | Poor signal or few trials | Improve impedance, add subjects, tune band |
-| API 500 error | Model not loaded / wrong shape | Verify `data/models/` path, check epoch dims |
-| Real-time lag > 300 ms | CNN on CPU too slow | Use SVM for live demo, CNN for offline |
-| Imbalanced classes | Unequal LEFT/RIGHT | Ensure 40 LEFT + 40 RIGHT per subject |
-
----
-
-## 📚 References
-
-1. Wolpaw, J. R., et al. (2002). Brain-computer interfaces for communication and control. *Clinical Neurophysiology*, 113(6), 767–791.
-2. Padfield, N., et al. (2019). EEG-based brain-computer interfaces using motor-imagery. *Sensors*, 19(6), 1423.
-3. Roy, Y., et al. (2019). Deep learning-based EEG analysis: a systematic review. *Journal of Neural Engineering*, 16(5).
-4. Ang, K. K., et al. (2012). Filter Bank Common Spatial Pattern. *Frontiers in Neuroscience*, 6, 39.
-5. Lawhern, V. J., et al. (2018). EEGNet: A compact CNN for EEG-based BCIs. *Journal of Neural Engineering*, 15(5).
-6. Upside Down Labs. (2023). BioAmp EXG Pill — Open Hardware Biosignal Acquisition. https://upsidedownlabs.tech
+| Issue | Likely Cause | Solution |
+|-------|-------------|----------|
+| **Jittery cursor** | Low room lighting or low camera frame rate | Increase ambient lighting; reduce gaze `--smoothing` value to `0.9` in the settings GUI. |
+| **Blinks not clicking** | Face landmark model file is missing | Ensure `data/face_landmarker.task` is downloaded and placed in the `/data` folder. |
+| **Voice command lag** | High ambient microphone noise | Move to a quieter area or check microphone input gain levels. |
+| **Kokoro TTS unavailable** | kokoro_onnx is not installed or model weights are missing | The system will automatically fall back to native Windows SAPI5 synthesizer, keeping voice functional. |
 
 ---
 
@@ -512,7 +233,7 @@ This project is licensed under the [MIT License](LICENSE).
 ---
 
 <p align="center">
-  <strong>Built with open hardware, open software, and real clinical impact. 🧠⚡</strong>
+  <strong>Assistive Technology made elegant, lightweight, and accessible to everyone. 👁️🎙️</strong>
 </p>
 <p align="center">
   <em>Group 7 — 8th Semester Major Project, 2026</em>

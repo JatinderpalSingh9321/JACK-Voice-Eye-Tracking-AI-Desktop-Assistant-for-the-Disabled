@@ -408,10 +408,6 @@ VOICE_COMMANDS = {
     "quit application":    ("stop_assistant", None, "Shutting down. Goodbye!"),
 
     # ── Dynamic Launchers ──
-    "launch blinking":        ("launch_blinking", None, "Launching EOG blink mechanism"),
-    "start blinking":         ("launch_blinking", None, "Launching EOG blink mechanism"),
-    "stop blinking":       ("stop_blinking", "", "Stopping EOG control"),
-    "stop eog":            ("stop_blinking", "", "Stopping EOG control"),
     "launch eye tracking":    ("launch_gaze", None, "Launching gaze tracking mechanism"),
     "launch eye cursor":      ("launch_gaze", None, "Launching gaze tracking mechanism"),
     "start eye tracking":     ("launch_gaze", None, "Launching gaze tracking mechanism"),
@@ -538,16 +534,14 @@ class VoiceAssistant(threading.Thread):
     Uses Google Speech Recognition (en-IN) + Windows SAPI5 TTS.
     """
 
-    def __init__(self, require_attention=True, port="COM7", ui_callback=None, state_callback=None, **kwargs):
+    def __init__(self, require_attention=True, ui_callback=None, state_callback=None, **kwargs):
         super().__init__(daemon=True, name="VoiceAssistant")
         self.require_attention = require_attention
-        self.port = port
         self.ui_callback = ui_callback
         self.state_callback = state_callback
         self._running = False
         self._state = STATE_IDLE
         self.gaze_tracker = None
-        self.eog_thread = None
 
         # Speech recognizer
         self._recognizer = sr.Recognizer()
@@ -1110,22 +1104,6 @@ class VoiceAssistant(threading.Thread):
                 self.ui_callback("exit_app")
             self.stop()
 
-        elif action_type == "launch_blinking":
-            if self.eog_thread and self.eog_thread.is_alive():
-                speak("Blinking mechanism is already active.")
-            else:
-                speak(response)
-                def run_blinking():
-                    try:
-                        from src.navtools_eog_control import run as eog_run
-                        eog_run(port=self.port, sensitivity=2.5, debug=True, mode="mouse", require_attention=False)
-                    except Exception as err:
-                        logger.error(f"EOG blink launch failed: {err}")
-                
-                self.eog_thread = threading.Thread(target=run_blinking, daemon=True, name="EOGControllerVoice")
-                self.eog_thread.start()
-                logger.info("  ✅ Dynamic Launcher: EOG Blinking Controller spawned via voice!")
-
         elif action_type == "launch_gaze":
             # Check if active gaze tracker thread already exists
             if self.gaze_tracker and self.gaze_tracker.is_alive():
@@ -1144,17 +1122,6 @@ class VoiceAssistant(threading.Thread):
                 t = threading.Thread(target=run_gaze, daemon=True, name="GazeTrackerVoice")
                 t.start()
                 logger.info("  ✅ Dynamic Launcher: Gaze Tracker spawned via voice!")
-
-        elif action_type == "stop_blinking":
-            if self.eog_thread and self.eog_thread.is_alive():
-                speak(response)
-                try:
-                    from src.navtools_eog_control import stop_controller
-                    stop_controller()
-                except Exception as err:
-                    logger.error(f"Failed to stop EOG blink controller: {err}")
-            else:
-                speak("Blinking mechanism is not running.")
 
         elif action_type == "stop_gaze":
             # Check if gaze tracker instance exists and is running
@@ -1178,13 +1145,10 @@ def main():
     )
     parser.add_argument("--no-attention", action="store_true",
                         help="Disable attention gating (always listen)")
-    parser.add_argument("--port", default="COM7",
-                        help="Arduino COM port (default: COM7)")
     args = parser.parse_args()
 
     assistant = VoiceAssistant(
         require_attention=not args.no_attention,
-        port=args.port,
     )
     assistant.start()
 

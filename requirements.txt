@@ -1,5 +1,6 @@
 # ============================================
 # BCI Assistive Control — Python Dependencies
+# (Refactored: Gaze Tracking & Voice Assistant)
 # Group No. 7 | 8th Semester Major Project
 # ============================================
 
@@ -8,32 +9,16 @@ numpy>=1.24
 scipy>=1.10
 pandas>=2.0
 
-# Visualization
-matplotlib>=3.7
-seaborn>=0.12
-
-# EEG signal processing
-mne>=1.4
-
-# Classical machine learning
-scikit-learn>=1.2
-
-# Deep learning
-tensorflow>=2.12
-
-# REST API
-flask>=2.3
-flask-cors>=4.0
-
-# Hardware serial interface
-pyserial>=3.5
-
-# Experiment paradigm UI
-pygame>=2.5
-
 # OS integration (Assistive control)
 pyautogui>=0.9.54
+pygetwindow>=0.0.9
 
 # Camera-based eye tracking
 opencv-python>=4.8
 mediapipe>=0.10
+
+# Voice Assistant (Speech Recognition & TTS)
+SpeechRecognition>=3.10
+pywin32>=306
+sounddevice>=0.4.6
+kokoro-onnx>=0.3.0
