@@ -37,8 +37,8 @@ import threading
 import time
 import urllib.parse
 
-import pythoncom
-import win32com.client
+# pythoncom and win32com are loaded lazily inside speak() to avoid
+# crashing the module if pywin32 is not installed.
 import speech_recognition as sr
 
 from src.utils import setup_logger, PROJECT_ROOT, DATA_DIR
@@ -91,6 +91,8 @@ def speak(text: str):
 
         # Try direct COM first for 0ms start latency fallback
         try:
+            import pythoncom
+            import win32com.client
             try:
                 pythoncom.CoInitialize()
             except Exception:
@@ -99,6 +101,8 @@ def speak(text: str):
             voice = win32com.client.Dispatch("SAPI.SpVoice")
             voice.Speak(text)
             return
+        except ImportError:
+            logger.debug("pywin32 not installed, skipping direct SAPI5 COM speech.")
         except Exception as e:
             logger.debug(f"Direct SAPI5 COM speech failed, falling back to PowerShell: {e}")
 

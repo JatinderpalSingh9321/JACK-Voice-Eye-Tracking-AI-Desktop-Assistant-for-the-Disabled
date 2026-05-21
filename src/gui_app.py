@@ -18,6 +18,7 @@ import logging
 import time
 import sys
 import os
+import traceback
 
 # ── Neural Interface Design System ─────────────────
 BG       = "#081425"    # Deep Navy
@@ -448,7 +449,8 @@ class App:
         try:
             from src.voice_assistant import VoiceAssistant
         except Exception as e:
-            messagebox.showerror("Import Error", str(e))
+            messagebox.showerror("Import Error",
+                f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}")
             self._va_running = False
             return
             
@@ -465,7 +467,8 @@ class App:
                 self.root.after(0, lambda: self._ui_sync_va(True))
                 self._va.run()
             except Exception as e:
-                logging.getLogger("gui").error(f"Voice Assistant error: {e}")
+                logging.getLogger("gui").error(
+                    f"Voice Assistant error: {type(e).__name__}: {e}\n{traceback.format_exc()}")
             finally:
                 self._va_running = False
                 self.root.after(0, lambda: self._ui_sync_va(False))
