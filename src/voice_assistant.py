@@ -598,10 +598,36 @@ class VoiceAssistant(threading.Thread):
         speak("Jim assistant is online. Say wake up Jim or hey Jim to activate me.")
         if self.state_callback: self.state_callback(STATE_IDLE)
 
-        # Open mic
-        mic = sr.Microphone()
-        mic_source = mic.__enter__()
-        logger.info("  Microphone opened")
+        # ── Open Microphone ─────────────────────────────────────────
+        logger.info("  Opening microphone...")
+        try:
+            mics = sr.Microphone.list_microphone_names()
+            logger.info(f"  Available microphones ({len(mics)}):")
+            for i, name in enumerate(mics):
+                logger.info(f"    [{i}] {name}")
+        except Exception as e:
+            logger.warning(f"  Could not list microphones: {e}")
+
+        mic = None
+        mic_source = None
+        try:
+            mic = sr.Microphone()
+            mic_source = mic.__enter__()
+            logger.info("  Microphone opened successfully.")
+            # Quick ambient noise adjustment so the recogniser calibrates
+            logger.info("  Adjusting for ambient noise (1s)...")
+            self._recognizer.adjust_for_ambient_noise(mic_source, duration=1)
+            logger.info(f"  Energy threshold set to {self._recognizer.energy_threshold:.0f}")
+        except OSError as e:
+            logger.error(f"  MICROPHONE ERROR: {e}")
+            logger.error("  No audio input device found or device is busy.")
+            logger.error("  Check that a microphone is connected and not in use by another app.")
+            if self.state_callback: self.state_callback("idle")
+            return
+        except Exception as e:
+            logger.error(f"  Failed to open microphone: {type(e).__name__}: {e}")
+            if self.state_callback: self.state_callback("idle")
+            return
 
         logger.info("=" * 55)
         logger.info("  Jim Voice Assistant -- READY")
@@ -616,7 +642,12 @@ class VoiceAssistant(threading.Thread):
                     continue
 
                 # Listen for audio
-                text = self._listen(mic_source, timeout=3, phrase_time_limit=5)
+                try:
+                    text = self._listen(mic_source, timeout=3, phrase_time_limit=5)
+                except Exception as e:
+                    logger.error(f"  Listen cycle error: {type(e).__name__}: {e}")
+                    time.sleep(1)
+                    continue
 
                 if not text:
                     continue
@@ -656,10 +687,11 @@ class VoiceAssistant(threading.Thread):
         except KeyboardInterrupt:
             pass
         finally:
-            try:
-                mic.__exit__(None, None, None)
-            except Exception:
-                pass
+            if mic is not None:
+                try:
+                    mic.__exit__(None, None, None)
+                except Exception:
+                    pass
             if self.state_callback: self.state_callback("speaking")
             speak("Jim signing off. Goodbye.")
             logger.info("Jim assistant stopped")
