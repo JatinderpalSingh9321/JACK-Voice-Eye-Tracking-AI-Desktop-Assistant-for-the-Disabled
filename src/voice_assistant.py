@@ -387,6 +387,44 @@ VOICE_COMMANDS = {
     "redo":                ("hotkey", "ctrl+y", "Redo"),
     "select all":          ("hotkey", "ctrl+a", "Selected all"),
 
+    # ── Global Media Controls (work in any app via Windows media keys) ──
+    "play":                ("hotkey", "playpause",  "Playing"),
+    "pause":               ("hotkey", "playpause",  "Pausing"),
+    "play pause":          ("hotkey", "playpause",  "Toggling playback"),
+    "play or pause":       ("hotkey", "playpause",  "Toggling playback"),
+    "toggle playback":     ("hotkey", "playpause",  "Toggling playback"),
+    "next song":           ("hotkey", "nexttrack",  "Next track"),
+    "next track":          ("hotkey", "nexttrack",  "Next track"),
+    "previous song":       ("hotkey", "prevtrack",  "Previous track"),
+    "previous track":      ("hotkey", "prevtrack",  "Previous track"),
+    "skip song":           ("hotkey", "nexttrack",  "Skipping to next song"),
+    "skip track":          ("hotkey", "nexttrack",  "Skipping track"),
+    "go back song":        ("hotkey", "prevtrack",  "Going back one track"),
+
+    # ── YouTube Music (focuses YT Music tab, uses its keyboard shortcuts) ──
+    "play music":              ("yt_music", "play_pause", "Toggling music playback"),
+    "pause music":             ("yt_music", "play_pause", "Pausing music"),
+    "resume music":            ("yt_music", "play_pause", "Resuming music"),
+    "play youtube music":      ("yt_music", "play_pause", "Toggling YouTube Music"),
+    "pause youtube music":     ("yt_music", "play_pause", "Pausing YouTube Music"),
+    "play the music":          ("yt_music", "play_pause", "Toggling YouTube Music"),
+    "pause the music":         ("yt_music", "play_pause", "Pausing the music"),
+    "start music":             ("yt_music", "play_pause", "Starting music"),
+    "stop music":              ("yt_music", "play_pause", "Stopping music"),
+    "next music":              ("yt_music", "next",       "Next song on YouTube Music"),
+    "next on youtube music":   ("yt_music", "next",       "Next song on YouTube Music"),
+    "previous music":          ("yt_music", "prev",       "Previous song on YouTube Music"),
+    "previous on youtube music":("yt_music", "prev",      "Previous song on YouTube Music"),
+    "mute music":              ("yt_music", "mute",       "Muting music"),
+    "unmute music":            ("yt_music", "mute",       "Unmuting music"),
+    "like this song":          ("yt_music", "like",       "Liking this song"),
+    "dislike this song":       ("yt_music", "dislike",    "Disliking this song"),
+    "shuffle music":           ("yt_music", "shuffle",    "Toggling shuffle"),
+    "shuffle on":              ("yt_music", "shuffle",    "Toggling shuffle"),
+    "volume up music":         ("yt_music", "vol_up",     "Increasing music volume"),
+    "volume down music":       ("yt_music", "vol_down",   "Decreasing music volume"),
+    "open youtube music":      ("launch",   "start https://music.youtube.com", "Opening YouTube Music"),
+
     # ── NavTools UI ──
     "go right":            ("nav", "right", "Moving right"),
     "move right":          ("nav", "right", "Moving right"),
@@ -498,10 +536,21 @@ WAKE_PHRASES = [
     "wake up",
     # Name only
     "jim", "gym", "gem", "tim",
-    # Observed Google Speech mishears
+    # Observed Google Speech mishears (Indian English accent)
+    # Google often hears "jim" as "hygiene" / "jeans" / "jean" / "gene"
+    "hygiene", "hey hygiene", "wake up hygiene", "hi hygiene",
+    "jeans", "hey jeans", "wake up jeans",
+    "jean", "hey jean", "wake up jean",
+    "gene", "hey gene", "wake up gene",
+    "gin", "hey gin", "wake up gin",
+    "dim", "hey dim",
+    "him", "hey him",
+    "vim", "hey vim",
+    # Compound mishears
     "breakup gym", "break up gym", "breakup jim",
     "makeup gym", "make up gym",
     "because gym", "because jim",
+    "waking gym", "waking jim",
 ]
 
 STATE_IDLE      = "idle"
@@ -1142,6 +1191,66 @@ class VoiceAssistant(threading.Thread):
             if self.ui_callback:
                 self.ui_callback("exit_app")
             self.stop()
+
+        elif action_type == "yt_music":
+            """Focus the YouTube Music browser tab and send the appropriate shortcut."""
+            import pygetwindow as gw
+
+            # YouTube Music shortcuts:
+            #   k / Space = play/pause   Shift+N = next   Shift+P = prev
+            #   m = mute   Up/Down = volume   Shift+L = like   Shift+D = dislike
+            shortcut_map = {
+                "play_pause": ("k",),
+                "next":       ("shift", "n"),
+                "prev":       ("shift", "p"),
+                "mute":       ("m",),
+                "vol_up":     ("up",),
+                "vol_down":   ("down",),
+                "like":       ("shift", "l"),
+                "dislike":    ("shift", "d"),
+                "shuffle":    ("shift", "s"),
+            }
+
+            # Find a browser window whose title contains YouTube Music
+            yt_win = None
+            try:
+                for win in gw.getAllWindows():
+                    title = win.title.lower()
+                    if "youtube music" in title or "music.youtube" in title:
+                        yt_win = win
+                        break
+            except Exception as e:
+                logger.warning(f"  pygetwindow search failed: {e}")
+
+            if yt_win is None:
+                speak("I couldn't find YouTube Music. Opening it now.")
+                try:
+                    subprocess.Popen("start https://music.youtube.com", shell=True)
+                except Exception:
+                    pass
+                return
+
+            # Activate the window
+            try:
+                yt_win.restore()
+                yt_win.activate()
+                time.sleep(0.4)   # let the OS finish focusing
+            except Exception as e:
+                logger.warning(f"  Could not activate YouTube Music window: {e}")
+
+            speak(response)
+            keys = shortcut_map.get(arg)
+            if keys:
+                try:
+                    if len(keys) == 1:
+                        pyautogui.press(keys[0])
+                    else:
+                        pyautogui.hotkey(*keys)
+                    logger.info(f"  YouTube Music: sent {keys}")
+                except Exception as e:
+                    logger.error(f"  YouTube Music hotkey error: {e}")
+            else:
+                logger.warning(f"  Unknown yt_music action: {arg}")
 
         elif action_type == "launch_gaze":
             # Check if active gaze tracker thread already exists
