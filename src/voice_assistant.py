@@ -139,6 +139,7 @@ VOICE_COMMANDS = {
     "open calculator":     ("launch", "calc", "Opening calculator"),
     "open notepad":        ("launch", "notepad", "Opening notepad"),
     "open settings":       ("launch", "start ms-settings:", "Opening settings"),
+    "open windows settings":("launch", "start ms-settings:", "Opening Windows Settings"),
     "open file explorer":  ("launch", "explorer", "Opening file explorer"),
     "open explorer":       ("launch", "explorer", "Opening file explorer"),
     "open my computer":    ("launch", "explorer ::{20D04FE0-3AEA-1069-A2D8-08002B30309D}", "Opening My Computer"),
@@ -444,6 +445,8 @@ VOICE_COMMANDS = {
     "sleep":               ("sleep", None, "Going to sleep. Say wake up Jim when you need me."),
     "close the assistant": ("stop_assistant", None, "Shutting down. Goodbye!"),
     "stop the assistant":  ("stop_assistant", None, "Shutting down. Goodbye!"),
+    "turn off the assistant":("stop_assistant", None, "Shutting down. Goodbye!"),
+    "turn off assistant":  ("stop_assistant", None, "Shutting down. Goodbye!"),
     "close assistant":     ("stop_assistant", None, "Shutting down. Goodbye!"),
     "stop assistant":      ("stop_assistant", None, "Shutting down. Goodbye!"),
     "exit application":    ("stop_assistant", None, "Shutting down. Goodbye!"),
@@ -493,6 +496,7 @@ DYNAMIC_PREFIXES = [
     ("go to website",         "open_url"),
     ("go to",                 "open_url"),
     ("type",                  "type_text"),
+    ("play ",                 "play_music"),
     ("close ",                "close_app"),
     ("stop ",                 "close_app"),
     ("terminate ",            "close_app"),
@@ -506,6 +510,9 @@ SEARCH_TARGET_SUFFIXES = [
     ("in explorer",       "explorer"),
     ("in files",          "explorer"),
     ("in folders",        "explorer"),
+    ("on youtube music",  "youtube_music"),
+    ("in youtube music",  "youtube_music"),
+    ("on youtube",        "youtube"),
     ("in browser",        "google"),
     ("in chrome",         "google"),
     ("in google",         "google"),
@@ -812,6 +819,24 @@ class VoiceAssistant(threading.Thread):
                 except Exception as e:
                     logger.error(f"File search failed: {e}")
 
+            elif target == "youtube_music":
+                speak(f"Searching YouTube Music for {query}")
+                encoded = urllib.parse.quote_plus(query)
+                url = f"https://music.youtube.com/search?q={encoded}"
+                try:
+                    subprocess.Popen(f"start {url}", shell=True)
+                except Exception as e:
+                    logger.error(f"YouTube Music search failed: {e}")
+                    
+            elif target == "youtube":
+                speak(f"Searching YouTube for {query}")
+                encoded = urllib.parse.quote_plus(query)
+                url = f"https://www.youtube.com/results?search_query={encoded}"
+                try:
+                    subprocess.Popen(f"start {url}", shell=True)
+                except Exception as e:
+                    logger.error(f"YouTube search failed: {e}")
+
             else:
                 # Search in currently active window using Ctrl+E
                 # (works in File Explorer, Chrome, Edge, and many apps)
@@ -843,6 +868,34 @@ class VoiceAssistant(threading.Thread):
                 subprocess.Popen(f"start {url}", shell=True)
             except Exception as e:
                 logger.error(f"Search failed: {e}")
+
+        elif action == "play_music":
+            if query.endswith("on youtube music"):
+                query = query[:-16].strip()
+                speak(f"Playing {query} on YouTube Music")
+                encoded = urllib.parse.quote_plus(query)
+                url = f"https://music.youtube.com/search?q={encoded}"
+                try:
+                    subprocess.Popen(f"start {url}", shell=True)
+                except Exception as e:
+                    logger.error(f"YouTube Music play failed: {e}")
+            elif query.endswith("on youtube"):
+                query = query[:-10].strip()
+                speak(f"Playing {query} on YouTube")
+                encoded = urllib.parse.quote_plus(query)
+                url = f"https://www.youtube.com/results?search_query={encoded}"
+                try:
+                    subprocess.Popen(f"start {url}", shell=True)
+                except Exception as e:
+                    logger.error(f"YouTube play failed: {e}")
+            else:
+                speak(f"Playing {query}")
+                encoded = urllib.parse.quote_plus(query)
+                url = f"https://music.youtube.com/search?q={encoded}"
+                try:
+                    subprocess.Popen(f"start {url}", shell=True)
+                except Exception as e:
+                    logger.error(f"Music play failed: {e}")
 
         elif action == "find_file":
             speak(f"Searching files for {query}")
