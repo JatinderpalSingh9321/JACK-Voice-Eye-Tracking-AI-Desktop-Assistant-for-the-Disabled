@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Assistant Orb</title>
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 100%; height: 100%;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  .scene {
+    position: relative;
+    width: 280px;
+    height: 280px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Ambient background bloom */
+  .ambient {
+    position: absolute;
+    width: 280px;
+    height: 280px;
+    border-radius: 50%;
+    background: radial-gradient(ellipse, rgba(0,220,180,0.07) 0%, transparent 70%);
+    animation: ambientPulse 4s ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes ambientPulse {
+    0%, 100% { transform: scale(1); opacity: 0.6; }
+    50%       { transform: scale(1.18); opacity: 1; }
+  }
+
+  /* Ripple rings */
+  .ripple-ring {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    border: 1px solid rgba(0,220,180,0.18);
+    animation: rippleExpand 3s ease-out infinite;
+    pointer-events: none;
+  }
+  .ripple-ring:nth-child(3) { animation-delay: 1s; }
+  .ripple-ring:nth-child(4) { animation-delay: 2s; }
+  @keyframes rippleExpand {
+    0%   { width: 100px; height: 100px; opacity: 0.6; }
+    100% { width: 260px; height: 260px; opacity: 0; }
+  }
+
+  /* Particle orbit field */
+  .particles {
+    position: absolute;
+    width: 260px; height: 260px;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+  .particle {
+    position: absolute;
+    width: 3px; height: 3px;
+    background: rgba(0,220,180,0.85);
+    border-radius: 50%;
+    top: 50%; left: 50%;
+    margin: -1.5px 0 0 -1.5px;
+    animation: particleOrbit linear infinite;
+    transform-origin: 0 0;
+  }
+  @keyframes particleOrbit {
+    0%   { transform: rotate(var(--s)) translateX(var(--r)) scale(1);   opacity: var(--o); }
+    50%  { transform: rotate(calc(var(--s) + 180deg)) translateX(var(--r)) scale(1.5); opacity: 1; }
+    100% { transform: rotate(calc(var(--s) + 360deg)) translateX(var(--r)) scale(1);   opacity: var(--o); }
+  }
+
+  /* Orb container */
+  .orb-wrap {
+    position: relative;
+    width: 180px; height: 180px;
+    cursor: pointer;
+    z-index: 10;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .orb-wrap:hover  .orb-body { transform: scale(1.04); }
+  .orb-wrap:active .orb-body { transform: scale(0.96); }
+
+  .orb-body {
+    width: 180px; height: 180px;
+    border-radius: 50%;
+    position: relative;
+    transition: transform 0.2s ease;
+    animation: orbFloat 5s ease-in-out infinite;
+  }
+  @keyframes orbFloat {
+    0%, 100% { transform: translateY(0px); }
+    50%       { transform: translateY(-7px); }
+  }
+
+  /* State animations */
+  .orb-body.listening { animation: orbListenPulse 0.85s ease-in-out infinite; }
+  .orb-body.thinking  { animation: orbThinkSpin 1.6s linear infinite; }
+  .orb-body.speaking  { animation: orbSpeakBounce 0.42s ease-in-out infinite; }
+  .orb-body.idle      { animation: orbFloat 5s ease-in-out infinite; }
+
+  @keyframes orbListenPulse {
+    0%, 100% { transform: scale(1); }
+    50%       { transform: scale(1.09); }
+  }
+  @keyframes orbThinkSpin {
+    0%   { transform: rotate(0deg)   scale(1); }
+    50%  { transform: rotate(180deg) scale(1.04); }
+    100% { transform: rotate(360deg) scale(1); }
+  }
+  @keyframes orbSpeakBounce {
+    0%, 100% { transform: scaleY(1)    scaleX(1); }
+    25%       { transform: scaleY(1.06) scaleX(0.97); }
+    75%       { transform: scaleY(0.96) scaleX(1.03); }
+  }
+
+  /* SVG fills the orb */
+  .orb-svg {
+    width: 180px; height: 180px;
+    position: absolute; top: 0; left: 0;
+  }
+
+  /* Waveform (speaking only) */
+  .wave-wrap {
+    position: absolute;
+    bottom: -34px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+  }
+  .wave-wrap.active { opacity: 1; }
+  .wave-bar {
+    width: 3px;
+    background: linear-gradient(to top, #00bfa0, #00ffe8);
+    border-radius: 2px;
+    min-height: 4px;
+    animation: waveBar 0.6s ease-in-out infinite;
+  }
+  @keyframes waveBar {
+    0%, 100% { height: 6px; }
+    50%       { height: 22px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="scene" id="orbScene">
+  <div class="ambient"></div>
+  <div class="ripple-ring"></div>
+  <div class="ripple-ring"></div>
+  <div class="ripple-ring"></div>
+  <div class="particles" id="particles"></div>
+
+  <div class="orb-wrap" id="orbWrap">
+    <div class="orb-body idle" id="orbBody">
+      <svg class="orb-svg" viewBox="0 0 180 180" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <radialGradient id="shellGrad" cx="44%" cy="36%" r="56%">
+            <stop offset="0%"   stop-color="#a0fff0" stop-opacity="0.28"/>
+            <stop offset="50%"  stop-color="#00bfa0" stop-opacity="0.12"/>
+            <stop offset="100%" stop-color="#004d40" stop-opacity="0.42"/>
+          </radialGradient>
+          <radialGradient id="coreGrad" cx="42%" cy="38%" r="55%">
+            <stop offset="0%"   stop-color="#ffffff" stop-opacity="1"/>
+            <stop offset="35%"  stop-color="#b0fff0" stop-opacity="1"/>
+            <stop offset="70%"  stop-color="#00bfa0" stop-opacity="0.9"/>
+            <stop offset="100%" stop-color="#004d40" stop-opacity="0.3"/>
+          </radialGradient>
+          <radialGradient id="haloGrad" cx="50%" cy="50%" r="50%">
+            <stop offset="55%"  stop-color="#00e5c8" stop-opacity="0"/>
+            <stop offset="80%"  stop-color="#00e5c8" stop-opacity="0.13"/>
+            <stop offset="100%" stop-color="#00e5c8" stop-opacity="0"/>
+          </radialGradient>
+          <filter id="glow">
+            <feGaussianBlur stdDeviation="2" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+          <filter id="softGlow">
+            <feGaussianBlur stdDeviation="5" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+          <clipPath id="orbClip"><circle cx="90" cy="90" r="86"/></clipPath>
+        </defs>
+
+        <!-- Halo -->
+        <circle cx="90" cy="90" r="88" fill="url(#haloGrad)"/>
+        <!-- Shell -->
+        <circle cx="90" cy="90" r="85" fill="url(#shellGrad)" stroke="rgba(0,220,180,0.28)" stroke-width="0.8"/>
+
+        <!-- Concentric rings -->
+        <g clip-path="url(#orbClip)" opacity="0.55">
+          <circle cx="90" cy="90" r="79" fill="none" stroke="#00bfa0" stroke-width="0.6"/>
+          <circle cx="90" cy="90" r="67" fill="none" stroke="#00d4b4" stroke-width="0.7"/>
+          <circle cx="90" cy="90" r="56" fill="none" stroke="#00e5c8" stroke-width="0.8"/>
+          <circle cx="90" cy="90" r="45" fill="none" stroke="#00f5dc" stroke-width="0.9"/>
+          <circle cx="90" cy="90" r="34" fill="none" stroke="#00ffe8" stroke-width="1"/>
+        </g>
+
+        <!-- Circuit lines -->
+        <g clip-path="url(#orbClip)" stroke="#00e5c8" stroke-width="0.5" opacity="0.4" fill="none" filter="url(#glow)">
+          <line x1="90" y1="8"   x2="90" y2="172"/>
+          <line x1="8"  y1="90"  x2="172" y2="90"/>
+          <line x1="35" y1="35"  x2="145" y2="145"/>
+          <line x1="145" y1="35" x2="35"  y2="145"/>
+          <circle cx="90" cy="24"  r="2.2" fill="#00e5c8"/>
+          <circle cx="90" cy="156" r="2.2" fill="#00e5c8"/>
+          <circle cx="24" cy="90"  r="2.2" fill="#00e5c8"/>
+          <circle cx="156" cy="90" r="2.2" fill="#00e5c8"/>
+          <polyline points="90,50 103,50 103,63"/>
+          <polyline points="90,130 77,130 77,117"/>
+          <polyline points="50,90 50,77 63,77"/>
+          <polyline points="130,90 130,103 117,103"/>
+        </g>
+
+        <!-- Glowing rings -->
+        <g clip-path="url(#orbClip)">
+          <circle cx="90" cy="90" r="63" fill="none" stroke="#00ffe8" stroke-width="1.2" opacity="0.3" filter="url(#softGlow)"/>
+          <circle cx="90" cy="90" r="47" fill="none" stroke="#00ffe8" stroke-width="1.5" opacity="0.35" filter="url(#softGlow)"/>
+          <circle cx="90" cy="90" r="32" fill="none" stroke="#ffffff" stroke-width="1.5" opacity="0.25" filter="url(#softGlow)"/>
+        </g>
+
+        <!-- Animated scan line -->
+        <g clip-path="url(#orbClip)">
+          <line id="scanLine" x1="4" y1="90" x2="176" y2="90"
+                stroke="#00ffe8" stroke-width="1" opacity="0.3">
+            <animateTransform attributeName="transform" type="translate"
+              from="0,-83" to="0,83" dur="3s" repeatCount="indefinite"/>
+          </line>
+        </g>
+
+        <!-- Core -->
+        <circle cx="90" cy="90" r="25" fill="url(#coreGrad)" filter="url(#softGlow)"/>
+        <circle cx="83" cy="81" r="9"  fill="rgba(255,255,255,0.55)" filter="url(#glow)"/>
+        <circle cx="90" cy="90" r="7"  fill="white" opacity="0.9"/>
+
+        <!-- Pulse rings -->
+        <circle cx="90" cy="90" r="25" fill="none" stroke="rgba(255,255,255,0.5)" stroke-width="2">
+          <animate attributeName="r" from="25" to="82" dur="2.5s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" from="0.5" to="0" dur="2.5s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="90" cy="90" r="25" fill="none" stroke="rgba(0,220,180,0.5)" stroke-width="1.5">
+          <animate attributeName="r" from="25" to="82" dur="2.5s" begin="0.85s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" from="0.4" to="0" dur="2.5s" begin="0.85s" repeatCount="indefinite"/>
+        </circle>
+      </svg>
+    </div>
+
+    <!-- Waveform bars -->
+    <div class="wave-wrap" id="waveWrap">
+      <div class="wave-bar" style="animation-delay:0s"></div>
+      <div class="wave-bar" style="animation-delay:0.1s"></div>
+      <div class="wave-bar" style="animation-delay:0.2s"></div>
+      <div class="wave-bar" style="animation-delay:0.05s"></div>
+      <div class="wave-bar" style="animation-delay:0.15s"></div>
+      <div class="wave-bar" style="animation-delay:0.25s"></div>
+      <div class="wave-bar" style="animation-delay:0.08s"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── Public API ────────────────────────────────────────────────────────────────
+// Call window.setOrbState(state) from your voice assistant code.
+// Valid states: 'idle' | 'listening' | 'thinking' | 'speaking'
+// ──────────────────────────────────────────────────────────────────────────────
+
+const orbBody  = document.getElementById('orbBody');
+const waveWrap = document.getElementById('waveWrap');
+const scanLine = document.getElementById('scanLine');
+
+const scanSpeeds = {
+  idle:      '3s',
+  listening: '1.1s',
+  thinking:  '0.65s',
+  speaking:  '1s',
+};
+
+window.setOrbState = function(state) {
+  orbBody.className = 'orb-body ' + state;
+  waveWrap.classList.toggle('active', state === 'speaking');
+  const anims = scanLine.getElementsByTagName('animateTransform');
+  if (anims[0]) anims[0].setAttribute('dur', scanSpeeds[state] || '3s');
+};
+
+// Start idle
+window.setOrbState('idle');
+</script>
+</body>
+</html>
