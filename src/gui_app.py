@@ -421,6 +421,7 @@ class App:
             easy_drag=True,
             on_top=True,
             transparent=True,
+            background_color='#00000000',
             js_api=self._orb_api,
         )
         self._orb_ready = threading.Event()
