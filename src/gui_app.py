@@ -21,7 +21,6 @@ import sys
 import os
 import traceback
 
-import webview
 
 # ── Neural Interface Design System ─────────────────
 BG       = "#081425"    # Deep Navy
@@ -380,6 +379,32 @@ class Dashboard:
 # ══════════════════════════════════════════════════
 # Main App Coordinator
 # ══════════════════════════════════════════════════
+from PyQt5.QtWidgets import QApplication, QMainWindow
+from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage
+from PyQt5.QtCore import QUrl, Qt
+import sys
+
+class OrbPage(QWebEnginePage):
+    def __init__(self, app_ref, parent=None):
+        super().__init__(parent)
+        self.app_ref = app_ref
+
+    def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
+        if message == "ORB_DBLCLICK":
+            self.app_ref.dashboard.show()
+        elif message == "ORB_RIGHTCLICK":
+            self.app_ref.on_close()
+        elif message.startswith("ORB_DRAG:"):
+            try:
+                parts = message.split("ORB_DRAG:")[1].split(",")
+                dx, dy = int(parts[0]), int(parts[1])
+                w = self.view().window()
+                w.move(w.x() + dx, w.y() + dy)
+            except Exception:
+                pass
+        super().javaScriptConsoleMessage(level, message, lineNumber, sourceID)
+
+
 class App:
     def __init__(self):
         # Logging
@@ -396,68 +421,79 @@ class App:
         self._va = None
         self._gaze_thread = None
 
-        # ── Orb (pywebview, main thread) ──
-        orb_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "orb.html")
-        self._orb_api = OrbApi()
-        self._orb_api._on_double_click = lambda: self.dashboard.show()
-        self._orb_api._on_right_click = lambda: self.on_close()
-
-        orb_url = "file:///" + orb_path.replace("\\", "/")
-        try:
-            import ctypes
-            screen_w = ctypes.windll.user32.GetSystemMetrics(0)
-        except Exception:
-            screen_w = 1920
-
-        self._orb_window = webview.create_window(
-            title="",
-            url=orb_url,
-            width=280,
-            height=280,
-            x=screen_w - 320,
-            y=30,
-            resizable=False,
-            frameless=True,
-            easy_drag=True,
-            on_top=True,
-            transparent=True,
-            js_api=self._orb_api,
-        )
-        self._orb_ready = threading.Event()
-
-        def _on_orb_loaded():
-            self._orb_ready.set()
-
-            # Inject click handlers
-            js = """
-            document.getElementById('orbWrap').addEventListener('dblclick', function(e) {
-                e.preventDefault(); e.stopPropagation();
-                pywebview.api.on_orb_double_click();
-            });
-            document.getElementById('orbWrap').addEventListener('contextmenu', function(e) {
-                e.preventDefault(); e.stopPropagation();
-                pywebview.api.on_orb_right_click();
-            });
-            """
-            try:
-                self._orb_window.evaluate_js(js)
-            except Exception:
-                pass
-
-        self._orb_window.events.loaded += _on_orb_loaded
-
         # ── Dashboard (Tkinter, background thread) ──
         self.dashboard = Dashboard(self)
         self.dashboard.start()
 
-    def set_orb_state(self, state: str):
-        """Push a state change to the orb via JS."""
-        if self._orb_ready.is_set() and self._orb_window:
-            try:
-                self._orb_window.evaluate_js(f"setOrbState('{state}')")
-            except Exception:
-                pass
+        # ── Orb (PyQt5, main thread) ──
+        if not QApplication.instance():
+            self.qt_app = QApplication(sys.argv)
+        else:
+            self.qt_app = QApplication.instance()
+            
+        self._orb_window = QMainWindow()
+        self._orb_window.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self._orb_window.setAttribute(Qt.WA_TranslucentBackground)
+        self._orb_window.resize(280, 280)
+        
+        try:
+            import ctypes
+            screen_w = ctypes.windll.user32.GetSystemMetrics(0)
+            self._orb_window.move(screen_w - 320, 30)
+        except Exception:
+            pass
 
+        self.webview = QWebEngineView(self._orb_window)
+        self.page = OrbPage(self, self.webview)
+        self.webview.setPage(self.page)
+        self.webview.page().setBackgroundColor(Qt.transparent)
+        
+        orb_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "orb.html")
+        orb_url = "file:///" + orb_path.replace("\\", "/")
+        self.webview.setUrl(QUrl(orb_url))
+        self.webview.resize(280, 280)
+        self._orb_window.setCentralWidget(self.webview)
+        
+        self.webview.loadFinished.connect(self._on_orb_loaded)
+
+    def _on_orb_loaded(self, ok):
+        if not ok: return
+        # Inject JavaScript to handle transparency and bridge interactions via console.log
+        js = """
+        document.body.style.background = 'transparent';
+        document.documentElement.style.background = 'transparent';
+        
+        document.getElementById('orbWrap').addEventListener('dblclick', function(e) {
+            e.preventDefault(); e.stopPropagation();
+            console.log("ORB_DBLCLICK");
+        });
+        document.getElementById('orbWrap').addEventListener('contextmenu', function(e) {
+            e.preventDefault(); e.stopPropagation();
+            console.log("ORB_RIGHTCLICK");
+        });
+        
+        let isDragging = false;
+        let startX, startY;
+        document.getElementById('orbWrap').addEventListener('mousedown', function(e) {
+            if(e.button === 0) { isDragging = true; startX = e.screenX; startY = e.screenY; }
+        });
+        document.addEventListener('mousemove', function(e) {
+            if(isDragging) {
+                let dx = e.screenX - startX;
+                let dy = e.screenY - startY;
+                console.log("ORB_DRAG:" + dx + "," + dy);
+                startX = e.screenX; startY = e.screenY;
+            }
+        });
+        document.addEventListener('mouseup', function(e) { isDragging = false; });
+        """
+        self.webview.page().runJavaScript(js)
+        self._update_orb_state("idle")
+
+    def set_orb_state(self, state: str):
+        if hasattr(self, 'webview'):
+            self.webview.page().runJavaScript(f"setOrbState('{state}')")
+            
     def _update_orb_state(self, state):
         """
         Called by VoiceAssistant's state_callback.
@@ -571,16 +607,20 @@ class App:
         self._stop_gaze()
         self.dashboard.destroy()
         try:
-            self._orb_window.destroy()
+            self._orb_window.close()
+            self.qt_app.quit()
         except Exception:
             pass
+
+    def run(self):
+        self._orb_window.show()
+        self.qt_app.exec_()
 
 
 # ── Entry point ───────────────────────────────────
 def main():
     app = App()
-    # webview.start() blocks on the main thread until all windows are closed
-    webview.start(debug=False)
+    app.run()
 
 
 if __name__ == "__main__":

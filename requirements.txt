@@ -25,4 +25,5 @@ sounddevice>=0.4.6
 kokoro-onnx>=0.3.0
 
 # GUI (Animated HTML Orb)
-pywebview>=5.0
+PyQt5>=5.15
+PyQtWebEngine>=5.15
