@@ -71,10 +71,6 @@ except Exception as e:
     _kokoro_tts = None
     logger.error(f"Error initializing Kokoro TTS: {e}")
 
-# Global voice configuration (default to female for softer, more pleasant TTS output)
-VOICE_GENDER = "female"  # "female" (soft) or "male" (robust)
-TTS_VOLUME = 100         # Range: 0 to 100
-
 _speak_lock = threading.Lock()
 
 def speak(text: str):
@@ -82,14 +78,29 @@ def speak(text: str):
     logger.info(f"  [Jim]: \"{text}\"")
     
     with _speak_lock:
+        # Dynamic settings retrieval
+        v_name = attention.voice_name.lower()
+        speed_val = attention.voice_speed
+
         if _kokoro_tts is not None:
             try:
-                # Select a warm, soft female voice or a clear male voice depending on config
-                voice_name = "af_sarah" if VOICE_GENDER == "female" else "am_michael"
-                speed_rate = 0.95 if VOICE_GENDER == "female" else 1.0
-                samples, sample_rate = _kokoro_tts.create(text, voice=voice_name, speed=speed_rate, lang="en-us")
-                volume_multiplier = max(0.0, min(1.0, TTS_VOLUME / 100.0))
-                sd.play(samples * volume_multiplier, sample_rate)
+                # Map standard voices to Kokoro profiles:
+                # - zira -> af_bella (soft female)
+                # - sarah -> af_sarah (natural female)
+                # - michael -> am_michael (natural male)
+                # - david -> am_adam (natural male)
+                kokoro_voice = "af_bella" # default soft female
+                if "sarah" in v_name:
+                    kokoro_voice = "af_sarah"
+                elif "michael" in v_name:
+                    kokoro_voice = "am_michael"
+                elif "david" in v_name or "male" in v_name:
+                    kokoro_voice = "am_adam"
+                elif "female" in v_name:
+                    kokoro_voice = "af_bella"
+
+                samples, sample_rate = _kokoro_tts.create(text, voice=kokoro_voice, speed=speed_val, lang="en-us")
+                sd.play(samples, sample_rate)
                 sd.wait()
                 return
             except Exception as e:
@@ -107,21 +118,42 @@ def speak(text: str):
             
             voice = win32com.client.Dispatch("SAPI.SpVoice")
             
-            # Set volume (0 to 100)
-            voice.Volume = int(max(0, min(100, TTS_VOLUME)))
+            # Match SAPI5 voices
+            voices = voice.GetVoices()
+            selected_voice = None
             
-            # Select a softer female voice description (Microsoft Zira or similar) if female gender is active
-            if VOICE_GENDER == "female":
-                voices = voice.GetVoices()
-                for i in range(voices.Count):
-                    desc = voices.Item(i).GetDescription()
-                    if "Zira" in desc or "Female" in desc or "Hazel" in desc:
-                        voice.Voice = voices.Item(i)
+            # Fuzzy match voice name
+            for i in range(voices.Count):
+                v_desc = voices.Item(i).GetDescription().lower()
+                if "zira" in v_name or "female" in v_name:
+                    if "zira" in v_desc or "female" in v_desc or "hazel" in v_desc:
+                        selected_voice = voices.Item(i)
                         break
-                voice.Rate = -1 # Speak slightly slower to sound more gentle/soft
-            else:
-                voice.Rate = 0
-                        
+                elif "david" in v_name or "male" in v_name:
+                    if "david" in v_desc or "male" in v_desc or "adam" in v_desc:
+                        selected_voice = voices.Item(i)
+                        break
+
+            if selected_voice is None:
+                # Direct match fallback by gender
+                for i in range(voices.Count):
+                    v_desc = voices.Item(i).GetDescription().lower()
+                    if "zira" in v_name or "female" in v_name:
+                        if "female" in v_desc:
+                            selected_voice = voices.Item(i)
+                            break
+                    else:
+                        if "male" in v_desc:
+                            selected_voice = voices.Item(i)
+                            break
+
+            if selected_voice is not None:
+                voice.Voice = selected_voice
+
+            # Map float speed (0.5..2.0) to SAPI5 Rate (-10..10)
+            rate_val = max(-10, min(10, int((speed_val - 1.0) * 10)))
+            voice.Rate = rate_val
+            
             voice.Speak(text)
             return
         except ImportError:
@@ -129,21 +161,25 @@ def speak(text: str):
         except Exception as e:
             logger.debug(f"Direct SAPI5 COM speech failed, falling back to PowerShell: {e}")
 
-        # Fallback to PowerShell subprocess (using standard .NET voice hints)
-        gender_setup = ""
-        rate_val = 1
-        if VOICE_GENDER == "female":
-            gender_setup = "$s.SelectVoiceByHints([System.Speech.Synthesis.VoiceGender]::Female);"
-            rate_val = 0 # Slightly slower for a more relaxing, soft presentation
-            
-        volume_setup = f"$s.Volume = {int(max(0, min(100, TTS_VOLUME)))};"
-            
+        # Fallback to PowerShell subprocess
         safe = text.replace("'", "''")
+        # Rate mapping for PowerShell synthesiser:
+        # Rate is also integer from -10 to 10
+        rate_val = max(-10, min(10, int((speed_val - 1.0) * 10)))
+        
+        # Decide PowerShell voice snippet based on selected voice
+        voice_select_snippet = ""
+        if "zira" in v_name or "female" in v_name:
+            voice_select_snippet = '$s.SelectVoice(\'Microsoft Zira Desktop\');'
+        elif "david" in v_name or "male" in v_name:
+            voice_select_snippet = '$s.SelectVoice(\'Microsoft David Desktop\');'
+
         cmd = (
             f"powershell -Command \""
             f"Add-Type -AssemblyName System.Speech; "
             f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-            f"$s.Rate = {rate_val}; {gender_setup} {volume_setup} "
+            f"{voice_select_snippet} "
+            f"$s.Rate = {rate_val}; "
             f"$s.Speak('{safe}')\""
         )
         try:
@@ -169,7 +205,7 @@ VOICE_COMMANDS = {
     # ── App Launches — Windows Built-in ──
     "open calculator":     ("launch", "calc", "Opening calculator"),
     "open notepad":        ("launch", "notepad", "Opening notepad"),
-    "open settings":       ("launch", "start ms-settings:", "Opening settings"),
+    "open windows settings":("launch", "start ms-settings:", "Opening Windows Settings"),
     "open file explorer":  ("launch", "explorer", "Opening file explorer"),
     "open explorer":       ("launch", "explorer", "Opening file explorer"),
     "open my computer":    ("launch", "explorer ::{20D04FE0-3AEA-1069-A2D8-08002B30309D}", "Opening My Computer"),
@@ -475,6 +511,9 @@ VOICE_COMMANDS = {
     "sleep":               ("sleep", None, "Going to sleep. Say wake up Jim when you need me."),
     "close the assistant": ("stop_assistant", None, "Shutting down. Goodbye!"),
     "stop the assistant":  ("stop_assistant", None, "Shutting down. Goodbye!"),
+    "turn off the assistant":("stop_assistant", None, "Shutting down. Goodbye!"),
+    "turn off assistant":  ("stop_assistant", None, "Shutting down. Goodbye!"),
+    "off the assistant":   ("stop_assistant", None, "Shutting down. Goodbye!"),
     "close assistant":     ("stop_assistant", None, "Shutting down. Goodbye!"),
     "stop assistant":      ("stop_assistant", None, "Shutting down. Goodbye!"),
     "exit application":    ("stop_assistant", None, "Shutting down. Goodbye!"),
@@ -491,11 +530,75 @@ VOICE_COMMANDS = {
     "close eye cursor":       ("stop_gaze", None, "Stopping gaze tracking mechanism"),
 
     # ── UI Commands ──
-    "open assistant settings": ("ui_command", "open_settings", "Opening settings panel"),
-    "open settings":           ("ui_command", "open_settings", "Opening settings panel"),
-    "close assistant settings":("ui_command", "close_settings", "Closing settings panel"),
-    "close settings":          ("ui_command", "close_settings", "Closing settings panel"),
-    "hide settings":           ("ui_command", "close_settings", "Closing settings panel"),
+    "open assistant settings":   ("ui_command", "open_settings", "Opening settings panel"),
+    "open assistance settings":  ("ui_command", "open_settings", "Opening settings panel"),
+    "open assistant setting":    ("ui_command", "open_settings", "Opening settings panel"),
+    "open assistance setting":   ("ui_command", "open_settings", "Opening settings panel"),
+    "open settings":             ("ui_command", "open_settings", "Opening settings panel"),
+    "open settings panel":       ("ui_command", "open_settings", "Opening settings panel"),
+    "open setting panel":         ("ui_command", "open_settings", "Opening settings panel"),
+    "open settings dashboard":   ("ui_command", "open_settings", "Opening settings panel"),
+    "open setting dashboard":     ("ui_command", "open_settings", "Opening settings panel"),
+    "show assistant settings":   ("ui_command", "open_settings", "Opening settings panel"),
+    "show assistance settings":  ("ui_command", "open_settings", "Opening settings panel"),
+    "show assistant setting":    ("ui_command", "open_settings", "Opening settings panel"),
+    "show assistance setting":   ("ui_command", "open_settings", "Opening settings panel"),
+    "show settings":             ("ui_command", "open_settings", "Opening settings panel"),
+    "show settings panel":       ("ui_command", "open_settings", "Opening settings panel"),
+    "show setting panel":         ("ui_command", "open_settings", "Opening settings panel"),
+    "show settings dashboard":   ("ui_command", "open_settings", "Opening settings panel"),
+    "show setting dashboard":     ("ui_command", "open_settings", "Opening settings panel"),
+    "open control center":       ("ui_command", "open_settings", "Opening settings panel"),
+    "open assistant control center": ("ui_command", "open_settings", "Opening settings panel"),
+    "open assistance control center":("ui_command", "open_settings", "Opening settings panel"),
+    "show control center":       ("ui_command", "open_settings", "Opening settings panel"),
+    "show assistant control center": ("ui_command", "open_settings", "Opening settings panel"),
+    "show assistance control center":("ui_command", "open_settings", "Opening settings panel"),
+    "open dashboard":            ("ui_command", "open_settings", "Opening settings panel"),
+    "show dashboard":            ("ui_command", "open_settings", "Opening settings panel"),
+    "open control dashboard":     ("ui_command", "open_settings", "Opening settings panel"),
+    "show control dashboard":     ("ui_command", "open_settings", "Opening settings panel"),
+    "open navtools settings":     ("ui_command", "open_settings", "Opening settings panel"),
+    "open navigation settings":   ("ui_command", "open_settings", "Opening settings panel"),
+    "open assistant panel":      ("ui_command", "open_settings", "Opening settings panel"),
+    "show assistant panel":      ("ui_command", "open_settings", "Opening settings panel"),
+    "open panel":                ("ui_command", "open_settings", "Opening settings panel"),
+    "show panel":                ("ui_command", "open_settings", "Opening settings panel"),
+
+    "close assistant settings":  ("ui_command", "close_settings", "Closing settings panel"),
+    "close assistance settings": ("ui_command", "close_settings", "Closing settings panel"),
+    "close assistant setting":   ("ui_command", "close_settings", "Closing settings panel"),
+    "close assistance setting":  ("ui_command", "close_settings", "Closing settings panel"),
+    "close settings":            ("ui_command", "close_settings", "Closing settings panel"),
+    "close settings panel":      ("ui_command", "close_settings", "Closing settings panel"),
+    "close setting panel":        ("ui_command", "close_settings", "Closing settings panel"),
+    "close settings dashboard":  ("ui_command", "close_settings", "Closing settings panel"),
+    "close setting dashboard":    ("ui_command", "close_settings", "Closing settings panel"),
+    "hide assistant settings":   ("ui_command", "close_settings", "Closing settings panel"),
+    "hide assistance settings":  ("ui_command", "close_settings", "Closing settings panel"),
+    "hide assistant setting":    ("ui_command", "close_settings", "Closing settings panel"),
+    "hide assistance setting":   ("ui_command", "close_settings", "Closing settings panel"),
+    "hide settings":             ("ui_command", "close_settings", "Closing settings panel"),
+    "hide settings panel":       ("ui_command", "close_settings", "Closing settings panel"),
+    "hide setting panel":         ("ui_command", "close_settings", "Closing settings panel"),
+    "hide settings dashboard":   ("ui_command", "close_settings", "Closing settings panel"),
+    "hide setting dashboard":     ("ui_command", "close_settings", "Closing settings panel"),
+    "close control center":      ("ui_command", "close_settings", "Closing settings panel"),
+    "close assistant control center": ("ui_command", "close_settings", "Closing settings panel"),
+    "close assistance control center":("ui_command", "close_settings", "Closing settings panel"),
+    "hide control center":       ("ui_command", "close_settings", "Closing settings panel"),
+    "hide assistant control center": ("ui_command", "close_settings", "Closing settings panel"),
+    "hide assistance control center":("ui_command", "close_settings", "Closing settings panel"),
+    "close dashboard":           ("ui_command", "close_settings", "Closing settings panel"),
+    "hide dashboard":            ("ui_command", "close_settings", "Closing settings panel"),
+    "close control dashboard":   ("ui_command", "close_settings", "Closing settings panel"),
+    "hide control dashboard":   ("ui_command", "close_settings", "Closing settings panel"),
+    "close navtools settings":   ("ui_command", "close_settings", "Closing settings panel"),
+    "close navigation settings": ("ui_command", "close_settings", "Closing settings panel"),
+    "close assistant panel":     ("ui_command", "close_settings", "Closing settings panel"),
+    "hide assistant panel":     ("ui_command", "close_settings", "Closing settings panel"),
+    "close panel":               ("ui_command", "close_settings", "Closing settings panel"),
+    "hide panel":                ("ui_command", "close_settings", "Closing settings panel"),
 }
 
 # Dynamic command prefixes — these extract a query from the speech
@@ -524,6 +627,7 @@ DYNAMIC_PREFIXES = [
     ("go to website",         "open_url"),
     ("go to",                 "open_url"),
     ("type",                  "type_text"),
+    ("play ",                 "play_music"),
     ("close ",                "close_app"),
     ("stop ",                 "close_app"),
     ("terminate ",            "close_app"),
@@ -537,6 +641,9 @@ SEARCH_TARGET_SUFFIXES = [
     ("in explorer",       "explorer"),
     ("in files",          "explorer"),
     ("in folders",        "explorer"),
+    ("on youtube music",  "youtube_music"),
+    ("in youtube music",  "youtube_music"),
+    ("on youtube",        "youtube"),
     ("in browser",        "google"),
     ("in chrome",         "google"),
     ("in google",         "google"),
@@ -591,7 +698,7 @@ STATE_SLEEPING  = "sleeping"
 
 def _contains_wake(text: str) -> bool:
     """Check if any wake phrase variant appears in the text."""
-    text = text.lower().strip()
+    text = text.lower().strip().strip('.?!,;:-_`"\'')
     for phrase in WAKE_PHRASES:
         if phrase in text:
             return True
@@ -607,8 +714,9 @@ def _strip_wake(text: str) -> str:
     text = text.lower().strip()
     for phrase in WAKE_PHRASES:
         if phrase in text:
-            return text.split(phrase, 1)[-1].strip()
-    return text
+            remainder = text.split(phrase, 1)[-1].strip()
+            return remainder.strip('.?!,;:-_`"\'')
+    return text.strip('.?!,;:-_`"\'')
 
 
 # ──────────────────────────────────────────────
@@ -632,16 +740,16 @@ class VoiceAssistant(threading.Thread):
 
         # Speech recognizer
         self._recognizer = sr.Recognizer()
-        self._recognizer.energy_threshold = 40               # Hyper-sensitive default (was 80/150)
-        self._recognizer.dynamic_energy_threshold = True       # Automatically adjust in changing rooms
-        self._recognizer.dynamic_energy_ratio = 1.04          # Keep threshold very close to noise floor for soft voice (was 1.08/1.15)
-        self._recognizer.phrase_threshold = 0.08              # Ultra-fast wake capture (was 0.10/0.15)
-        self._recognizer.pause_threshold = 0.8                # Delay before concluding speech phrase
+        self._recognizer.energy_threshold = 400
+        self._recognizer.dynamic_energy_threshold = False
+        self._recognizer.pause_threshold = 0.8
 
     def _listen(self, mic, timeout=5, phrase_time_limit=6) -> str:
         """Listen to microphone and return transcribed text."""
         try:
-            logger.info("  (listening...)")
+            # Synchronize microphone sensitivity dynamically
+            self._recognizer.energy_threshold = attention.mic_sensitivity
+            logger.info(f"  (listening with sensitivity {self._recognizer.energy_threshold}...)")
             audio = self._recognizer.listen(
                 mic, timeout=timeout,
                 phrase_time_limit=phrase_time_limit
@@ -699,12 +807,7 @@ class VoiceAssistant(threading.Thread):
             # Quick ambient noise adjustment so the recogniser calibrates
             logger.info("  Adjusting for ambient noise (1s)...")
             self._recognizer.adjust_for_ambient_noise(mic_source, duration=1)
-            # Clamp the calibrated threshold to max 100 to maintain high sensitivity in all rooms
-            if self._recognizer.energy_threshold > 100:
-                logger.info(f"  Calibrated threshold was {self._recognizer.energy_threshold:.0f}, clamping to 100 for high sensitivity.")
-                self._recognizer.energy_threshold = 100
-            else:
-                logger.info(f"  Energy threshold set to {self._recognizer.energy_threshold:.0f}")
+            logger.info(f"  Energy threshold set to {self._recognizer.energy_threshold:.0f}")
         except OSError as e:
             logger.error(f"  MICROPHONE ERROR: {e}")
             logger.error("  No audio input device found or device is busy.")
@@ -788,6 +891,9 @@ class VoiceAssistant(threading.Thread):
 
     def _process_command(self, text: str):
         """Find the best matching command and execute it."""
+        # Clean leading/trailing punctuation and whitespace
+        text = text.lower().strip().strip('.?!,;:-_`"\'')
+
         # 1. Exact static match first
         if text in VOICE_COMMANDS:
             action_type, arg, response = VOICE_COMMANDS[text]
@@ -850,6 +956,24 @@ class VoiceAssistant(threading.Thread):
                 except Exception as e:
                     logger.error(f"File search failed: {e}")
 
+            elif target == "youtube_music":
+                speak(f"Searching YouTube Music for {query}")
+                encoded = urllib.parse.quote_plus(query)
+                url = f"https://music.youtube.com/search?q={encoded}"
+                try:
+                    subprocess.Popen(f"start {url}", shell=True)
+                except Exception as e:
+                    logger.error(f"YouTube Music search failed: {e}")
+                    
+            elif target == "youtube":
+                speak(f"Searching YouTube for {query}")
+                encoded = urllib.parse.quote_plus(query)
+                url = f"https://www.youtube.com/results?search_query={encoded}"
+                try:
+                    subprocess.Popen(f"start {url}", shell=True)
+                except Exception as e:
+                    logger.error(f"YouTube search failed: {e}")
+
             else:
                 # Search in currently active window using Ctrl+E
                 # (works in File Explorer, Chrome, Edge, and many apps)
@@ -881,6 +1005,37 @@ class VoiceAssistant(threading.Thread):
                 subprocess.Popen(f"start {url}", shell=True)
             except Exception as e:
                 logger.error(f"Search failed: {e}")
+
+        elif action == "play_music":
+            is_yt_music = True
+            if query.endswith("on youtube music"):
+                query = query[:-16].strip()
+            elif query.endswith("on youtube"):
+                query = query[:-10].strip()
+                is_yt_music = False
+
+            speak(f"Playing {query}")
+            try:
+                import urllib.request
+                import urllib.parse
+                import re
+                
+                query_string = urllib.parse.urlencode({"search_query": query})
+                html_content = urllib.request.urlopen("https://www.youtube.com/results?" + query_string)
+                search_results = re.findall(r'watch\?v=([a-zA-Z0-9_-]{11})', html_content.read().decode())
+                
+                if search_results:
+                    video_id = search_results[0]
+                    if is_yt_music:
+                        url = f"https://music.youtube.com/watch?v={video_id}"
+                    else:
+                        url = f"https://www.youtube.com/watch?v={video_id}"
+                    subprocess.Popen(f"start {url}", shell=True)
+                else:
+                    speak("I couldn't find that song.")
+            except Exception as e:
+                logger.error(f"Music play failed: {e}")
+                speak("I encountered an error trying to play the music.")
 
         elif action == "find_file":
             speak(f"Searching files for {query}")

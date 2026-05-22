@@ -33,6 +33,9 @@ class AttentionState:
         self._last_update = 0.0
         self._screen_w = 1920
         self._screen_h = 1080
+        self._voice_name = "zira"   # Default to soft female voice
+        self._voice_speed = 1.0
+        self._mic_sensitivity = 300  # Highly sensitive default to capture soft speech
 
     # ── Attention ──────────────────────────────
     @property
@@ -69,6 +72,36 @@ class AttentionState:
         with self._state_lock:
             self._screen_w = w
             self._screen_h = h
+
+    @property
+    def voice_name(self) -> str:
+        with self._state_lock:
+            return self._voice_name
+
+    @voice_name.setter
+    def voice_name(self, name: str):
+        with self._state_lock:
+            self._voice_name = name
+
+    @property
+    def voice_speed(self) -> float:
+        with self._state_lock:
+            return self._voice_speed
+
+    @voice_speed.setter
+    def voice_speed(self, val: float):
+        with self._state_lock:
+            self._voice_speed = val
+
+    @property
+    def mic_sensitivity(self) -> int:
+        with self._state_lock:
+            return self._mic_sensitivity
+
+    @mic_sensitivity.setter
+    def mic_sensitivity(self, val: int):
+        with self._state_lock:
+            self._mic_sensitivity = val
 
 
 # Module-level convenience

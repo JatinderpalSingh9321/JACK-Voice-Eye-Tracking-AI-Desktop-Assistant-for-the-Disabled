@@ -27,9 +27,9 @@ echo [OK] Python is installed.
 echo.
 
 :: 2. Create virtual environment
-if not exist ".venv" (
-    echo [INFO] Creating Python virtual environment (.venv)...
-    python -m venv .venv
+if not exist "venv" (
+    echo [INFO] Creating Python virtual environment (venv)...
+    python -m venv venv
     if %errorlevel% neq 0 (
         color 0C
         echo [ERROR] Failed to create virtual environment!
@@ -37,14 +37,14 @@ if not exist ".venv" (
         exit /b
     )
 ) else (
-    echo [INFO] Virtual environment (.venv) already exists.
+    echo [INFO] Virtual environment (venv) already exists.
 )
 echo [OK] Virtual environment ready.
 echo.
 
 :: 3. Upgrade pip and install requirements
 echo [INFO] Upgrading pip and installing required Python libraries...
-call .\.venv\Scripts\activate
+call .\venv\Scripts\activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 if %errorlevel% neq 0 (
