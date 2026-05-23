@@ -7,14 +7,19 @@ Group No. 7 | 8th Semester Major Project
 """
 
 import logging
+import sys
 from pathlib import Path
 
 # ──────────────────────────────────────────────
 # PATH CONFIGURATION
 # ──────────────────────────────────────────────
 
-# Project root directory (one level up from src/)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# When frozen by PyInstaller, __file__ is inside _MEIPASS temp extraction.
+# Use _MEIPASS as project root so all data paths resolve correctly.
+if getattr(sys, 'frozen', False):
+    PROJECT_ROOT = Path(sys._MEIPASS)
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Data directory
 DATA_DIR = PROJECT_ROOT / "data"
