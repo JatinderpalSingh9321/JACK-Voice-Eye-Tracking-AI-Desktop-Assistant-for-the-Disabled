@@ -58,7 +58,7 @@ echo.
 echo CONTROLS:
 echo   - Double-click the Orb  = Open Settings Dashboard
 echo   - Right-click the Orb   = Exit the application
-echo   - Say "hey Jim"         = Wake the voice assistant
+echo   - Say "hey Jack"        = Wake the voice assistant
 echo.
 echo REQUIREMENTS:
 echo   - Windows 10 or 11 (64-bit)

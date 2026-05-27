@@ -129,11 +129,11 @@ class GazeTracker(threading.Thread):
 
         # ── Click-gesture state ──
         # EAR thresholds (with hysteresis gap to prevent chatter)
-        self._EAR_CLOSED = 0.065   # EAR below this → eye counts as closed
-        self._EAR_OPEN   = 0.155   # EAR above this → eye counts as open (hysteresis)
+        self._EAR_CLOSED = 0.085   # EAR below this → eye counts as closed (easier to trigger)
+        self._EAR_OPEN   = 0.130   # EAR above this → eye counts as open (easier to re-arm)
 
         # Frame-count thresholds (at ~30 fps)
-        self._MIN_CLOSED_FRAMES = 2  # Eye must be closed this many consecutive frames to confirm
+        self._MIN_CLOSED_FRAMES = 3  # Eye must be closed this many consecutive frames to confirm
         self._MIN_OPEN_FRAMES   = 6  # Eye must be open this many consecutive frames before wink fires
 
         # Per-eye consecutive-frame counters
@@ -146,6 +146,10 @@ class GazeTracker(threading.Thread):
         self._l_wink_armed = True   # True → allowed to fire next wink
         self._r_wink_armed = True
 
+        # Wink candidate tracking to prevent normal blinks from triggering false winks
+        self._l_wink_candidate = False
+        self._r_wink_candidate = False
+
         # Cooldown between any click events
         self._click_cooldown = 0.8
         self._last_click_t   = 0.0
@@ -155,6 +159,15 @@ class GazeTracker(threading.Thread):
         self._both_confirmed_closed = False
         self._eyes_reopened_after_blink = True  # Must reopen fully between counted blinks
         self._DOUBLE_BLINK_WINDOW = 1.2  # Max seconds between two blink cycles
+
+        # Running min/max EAR bounds for dynamic calibration
+        self._l_ear_max = 0.20
+        self._l_ear_min = 0.05
+        self._r_ear_max = 0.20
+        self._r_ear_min = 0.05
+
+        # Consecutive frames both eyes are closed (for attention gating)
+        self._eyes_closed_consecutive_frames = 0
 
     def run(self):
         import mediapipe as mp
@@ -219,6 +232,9 @@ class GazeTracker(threading.Thread):
                     attention.is_attentive = False
                     continue
 
+                # Update dynamic EAR thresholds first
+                self._update_dynamic_thresholds(lm)
+
                 # ── Attention: check if eyes are open ──
                 eyes_open = self._check_eyes_open(lm)
  
@@ -231,14 +247,14 @@ class GazeTracker(threading.Thread):
                 d_norm = np.sqrt(dx**2 + dy**2)
                 # Calibrated for wide-angle webcams (FOV ~78deg): D = 0.06 / d_norm
                 distance_meters = 0.06 / (d_norm + 1e-6)
-                in_range = distance_meters <= 0.7
+                in_range = distance_meters <= 1.50
  
                 is_attentive = eyes_open and looking_at_screen and in_range
                 attention.is_attentive = is_attentive
-
+ 
                 # ── Wink / double-blink click detection (always active when face visible) ──
                 self._detect_clicks(lm)
-
+ 
                 # ── Calculate gaze from iris position ──
                 if is_attentive:
                     gx, gy = self._calc_gaze(lm)
@@ -250,18 +266,18 @@ class GazeTracker(threading.Thread):
                     self._diag_counter += 1
                     if self._diag_counter % 15 == 0:
                         reasons = []
-                        if not eyes_open: reasons.append("Eyes Closed (EAR < 0.12)")
+                        if not eyes_open: reasons.append("Eyes Closed (sustained)")
                         if not looking_at_screen: 
                             yaw = getattr(self, '_last_yaw', 0.0)
                             pitch = getattr(self, '_last_pitch', 0.0)
                             reasons.append(f"Head Turned Away (Yaw: {yaw:.1f}°, Pitch: {pitch:.1f}°)")
-                        if not in_range: reasons.append(f"Too Far ({distance_meters:.2f}m > 0.70m)")
+                        if not in_range: reasons.append(f"Too Far ({distance_meters:.2f}m > 1.50m)")
                         logger.info(f"Tracking paused: {', '.join(reasons)}")
  
                 if self.show_preview:
                     # Draw distance details on frame
                     color = (0, 255, 0) if in_range else (0, 0, 255)
-                    status_text = "ACTIVE" if in_range else "OUT OF RANGE (>0.7m)"
+                    status_text = "ACTIVE" if in_range else "OUT OF RANGE (>1.50m)"
                     cv2.putText(frame, f"Dist: {distance_meters:.2f}m ({status_text})", 
                                 (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                     self._draw_debug(frame, lm, is_attentive)
@@ -297,6 +313,41 @@ class GazeTracker(threading.Thread):
         r_ear = ear(R_EYE_TOP, R_EYE_BOT, R_EYE_TOP2, R_EYE_BOT2, R_EYE_OUTER, R_EYE_INNER)
         return l_ear, r_ear
 
+    def _update_dynamic_thresholds(self, lm):
+        """Update running min/max EAR bounds and calculate dynamic thresholds."""
+        l_ear, r_ear = self._per_eye_ear(lm)
+
+        # Update running bounds for left eye
+        if l_ear > self._l_ear_max:
+            self._l_ear_max = min(0.40, l_ear)
+        else:
+            self._l_ear_max = max(0.10, self._l_ear_max - (self._l_ear_max - l_ear) * 0.0002)
+
+        if l_ear < self._l_ear_min:
+            self._l_ear_min = max(0.03, l_ear)
+        else:
+            self._l_ear_min = min(0.12, self._l_ear_min + (l_ear - self._l_ear_min) * 0.0002)
+
+        # Update running bounds for right eye
+        if r_ear > self._r_ear_max:
+            self._r_ear_max = min(0.40, r_ear)
+        else:
+            self._r_ear_max = max(0.10, self._r_ear_max - (self._r_ear_max - r_ear) * 0.0002)
+
+        if r_ear < self._r_ear_min:
+            self._r_ear_min = max(0.03, r_ear)
+        else:
+            self._r_ear_min = min(0.12, self._r_ear_min + (r_ear - self._r_ear_min) * 0.0002)
+
+        # Compute dynamic thresholds
+        l_ear_range = self._l_ear_max - self._l_ear_min
+        self._l_closed_thresh = self._l_ear_min + l_ear_range * 0.35
+        self._l_open_thresh   = self._l_ear_min + l_ear_range * 0.60
+
+        r_ear_range = self._r_ear_max - self._r_ear_min
+        self._r_closed_thresh = self._r_ear_min + r_ear_range * 0.35
+        self._r_open_thresh   = self._r_ear_min + r_ear_range * 0.60
+
     def _detect_clicks(self, lm):
         """Detect wink / double-blink gestures and fire mouse clicks.
 
@@ -316,18 +367,18 @@ class GazeTracker(threading.Thread):
         l_ear, r_ear = self._per_eye_ear(lm)
 
         # ── Update per-eye frame counters with hysteresis ──
-        if l_ear < self._EAR_CLOSED:
+        if l_ear < self._l_closed_thresh:
             self._l_closed_frames += 1
             self._l_open_frames    = 0
-        elif l_ear > self._EAR_OPEN:
+        elif l_ear > self._l_open_thresh:
             self._l_open_frames    += 1
             self._l_closed_frames   = 0
         # In the hysteresis zone: keep existing counts unchanged
 
-        if r_ear < self._EAR_CLOSED:
+        if r_ear < self._r_closed_thresh:
             self._r_closed_frames += 1
             self._r_open_frames    = 0
-        elif r_ear > self._EAR_OPEN:
+        elif r_ear > self._r_open_thresh:
             self._r_open_frames    += 1
             self._r_closed_frames   = 0
 
@@ -337,6 +388,12 @@ class GazeTracker(threading.Thread):
         l_confirmed_open   = self._l_open_frames   >= self._MIN_OPEN_FRAMES
         r_confirmed_open   = self._r_open_frames   >= self._MIN_OPEN_FRAMES
         both_confirmed_closed = l_confirmed_closed and r_confirmed_closed
+
+        # Clear wink candidates if both eyes are closed (blink in progress)
+        both_closed = l_ear < self._l_closed_thresh and r_ear < self._r_closed_thresh
+        if both_closed:
+            self._l_wink_candidate = False
+            self._r_wink_candidate = False
 
         # ── Double-blink: count complete blink CYCLES (close → reopen) ──
         if both_confirmed_closed and not self._both_confirmed_closed:
@@ -364,25 +421,33 @@ class GazeTracker(threading.Thread):
                     self._blink_cycle_times = []
 
         # ── Wink detection (only when it is NOT a full blink) ──
-        if not both_confirmed_closed:
+        if not both_closed:
+            # Left wink candidate: left confirmed-closed, right eye open
+            if l_confirmed_closed and r_ear > self._r_open_thresh:
+                self._l_wink_candidate = True
 
-            # Left wink: left confirmed-closed, right confirmed-open
-            if l_confirmed_closed and r_confirmed_open:
-                if (self._l_wink_armed
-                        and now - self._last_click_t >= self._click_cooldown):
-                    logger.info(f"  [Click] Left wink (L_EAR={l_ear:.3f}, R_EAR={r_ear:.3f}) → left click")
+            # Right wink candidate: right confirmed-closed, left eye open
+            if r_confirmed_closed and l_ear > self._l_open_thresh:
+                self._r_wink_candidate = True
+
+        # Fire wink on reopen (rising edge) when we have a candidate
+        if l_ear > self._l_open_thresh:
+            if self._l_wink_candidate:
+                if self._l_wink_armed and now - self._last_click_t >= self._click_cooldown:
+                    logger.info(f"  [Click] Left wink release (L_EAR={l_ear:.3f}, R_EAR={r_ear:.3f}) → left click")
                     pyautogui.click(button='left', _pause=False)
                     self._last_click_t = now
-                    self._l_wink_armed = False   # Disarm until eye fully reopens
+                    self._l_wink_armed = False
+                self._l_wink_candidate = False
 
-            # Right wink: right confirmed-closed, left confirmed-open
-            if r_confirmed_closed and l_confirmed_open:
-                if (self._r_wink_armed
-                        and now - self._last_click_t >= self._click_cooldown):
-                    logger.info(f"  [Click] Right wink (L_EAR={l_ear:.3f}, R_EAR={r_ear:.3f}) → left click")
+        if r_ear > self._r_open_thresh:
+            if self._r_wink_candidate:
+                if self._r_wink_armed and now - self._last_click_t >= self._click_cooldown:
+                    logger.info(f"  [Click] Right wink release (L_EAR={l_ear:.3f}, R_EAR={r_ear:.3f}) → left click")
                     pyautogui.click(button='left', _pause=False)
                     self._last_click_t = now
-                    self._r_wink_armed = False   # Disarm until eye fully reopens
+                    self._r_wink_armed = False
+                self._r_wink_candidate = False
 
         # Re-arm winks once eye has fully reopened (confirmed-open)
         if l_confirmed_open:
@@ -391,17 +456,26 @@ class GazeTracker(threading.Thread):
             self._r_wink_armed = True
 
     def _check_eyes_open(self, lm) -> bool:
-        """Check Eye Aspect Ratio (EAR) — closed eyes = not attentive."""
-        def ear(top_idx, bot_idx, outer_idx, inner_idx):
-            v_dist = abs(lm[top_idx].y - lm[bot_idx].y)
-            h_dist = abs(lm[outer_idx].x - lm[inner_idx].x)
-            return v_dist / (h_dist + 1e-6)
+        """Check Eye Aspect Ratio (EAR) — closed eyes = not attentive.
 
-        l_ear = ear(L_EYE_TOP, L_EYE_BOT, L_EYE_OUTER, L_EYE_INNER)
-        r_ear = ear(R_EYE_TOP, R_EYE_BOT, R_EYE_OUTER, R_EYE_INNER)
+        Uses dynamic thresholds and temporal filtering to prevent brief blinks
+        or downward gaze shifts from pausing the cursor.
+        """
+        l_ear, r_ear = self._per_eye_ear(lm)
         avg_ear = (l_ear + r_ear) / 2.0
 
-        return avg_ear > 0.12  # Threshold for "open" (higher threshold prevents closed-eye hallucination)
+        # Open threshold is average of the dynamic open thresholds
+        avg_open_thresh = (self._l_open_thresh + self._r_open_thresh) / 2.0
+        # Gating threshold: slightly lower than open to prevent flickers
+        gating_thresh = max(0.06, min(0.09, avg_open_thresh * 0.85))
+
+        if avg_ear < gating_thresh:
+            self._eyes_closed_consecutive_frames += 1
+        else:
+            self._eyes_closed_consecutive_frames = 0
+
+        # Require 15 consecutive frames (~0.5s) of closed eyes to count as not open
+        return self._eyes_closed_consecutive_frames < 15
 
     def _check_head_pose(self, lm, img_shape) -> bool:
         """Check if head is facing roughly toward the camera."""
@@ -443,15 +517,16 @@ class GazeTracker(threading.Thread):
         yaw = angles[1]
         pitch = angles[0]
  
-        # Correct the pitch angle for the inverted Y-axis projection baseline (180 degrees)
-        pitch_error = 180.0 - abs(pitch)
+        # Calculate yaw and pitch error considering symmetry around 0 or 180 degrees
+        yaw_error = min(abs(yaw), 180.0 - abs(yaw))
+        pitch_error = min(abs(pitch), 180.0 - abs(pitch))
 
         # Log angles in diagnostics
-        self._last_yaw = yaw
+        self._last_yaw = yaw_error
         self._last_pitch = pitch_error
 
-        # Within ±45° yaw and ±45° pitch_error → looking at screen
-        return abs(yaw) < 45 and abs(pitch_error) < 45
+        # Within ±50° yaw_error and ±50° pitch_error → looking at screen
+        return yaw_error < 50 and pitch_error < 50
 
     def _calc_gaze(self, lm) -> tuple:
         """Calculate normalised gaze position (0..1) from iris landmarks."""

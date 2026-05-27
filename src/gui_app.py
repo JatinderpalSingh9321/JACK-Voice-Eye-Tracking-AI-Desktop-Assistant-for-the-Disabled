@@ -11,6 +11,13 @@ Usage:
 Group No. 7 | 8th Semester Major Project
 """
 
+# Prevent DLL load conflict between PyQt5 and onnxruntime on Windows:
+# Importing onnxruntime/kokoro_onnx before PyQt5 resolves the DLL initialization error.
+try:
+    import kokoro_onnx
+except ImportError:
+    pass
+
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 import threading

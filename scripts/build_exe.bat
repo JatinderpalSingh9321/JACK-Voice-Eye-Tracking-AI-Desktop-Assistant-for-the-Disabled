@@ -6,8 +6,8 @@ echo           NAVTOOLS — WINDOWS EXECUTABLE BUILDER
 echo =================================================================
 echo.
 
-SET VENV_PYTHON=%~dp0.venv\Scripts\python.exe
-SET VENV_PYINSTALLER=%~dp0.venv\Scripts\pyinstaller.exe
+SET VENV_PYTHON=%~dp0..\.venv\Scripts\python.exe
+SET VENV_PYINSTALLER=%~dp0..\.venv\Scripts\pyinstaller.exe
 
 :: 1. Check .venv exists
 IF NOT EXIST "%VENV_PYTHON%" (
@@ -32,7 +32,7 @@ IF NOT EXIST "%VENV_PYINSTALLER%" (
 echo [OK] PyInstaller ready.
 
 :: 3. Convert orb logo to .ico if not present
-IF NOT EXIST "%~dp0navtools.ico" (
+IF NOT EXIST "%~dp0..\navtools.ico" (
     echo [INFO] Converting orb_logo.png to navtools.ico...
     "%VENV_PYTHON%" -c "from PIL import Image; img=Image.open('src/orb_logo.png').convert('RGBA'); sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]; imgs=[img.resize(s) for s in sizes]; imgs[0].save('navtools.ico', format='ICO', sizes=sizes, append_images=imgs[1:])"
     echo [OK] Icon created.
@@ -42,8 +42,8 @@ IF NOT EXIST "%~dp0navtools.ico" (
 
 :: 4. Clean previous build output
 echo [INFO] Cleaning previous build artifacts...
-IF EXIST "%~dp0build\NavTools" RMDIR /S /Q "%~dp0build\NavTools"
-IF EXIST "%~dp0dist\NavTools"  RMDIR /S /Q "%~dp0dist\NavTools"
+IF EXIST "%~dp0..\build\NavTools" RMDIR /S /Q "%~dp0..\build\NavTools"
+IF EXIST "%~dp0..\dist\NavTools"  RMDIR /S /Q "%~dp0..\dist\NavTools"
 echo [OK] Clean done.
 
 :: 5. Run PyInstaller
@@ -67,10 +67,10 @@ echo =================================================================
 echo              BUILD SUCCESSFUL!
 echo =================================================================
 echo.
-echo Output location: %~dp0dist\NavTools\NavTools.exe
+echo Output location: %~dp0..\dist\NavTools\NavTools.exe
 echo.
 echo To test the build, run:
-echo    %~dp0dist\NavTools\NavTools.exe
+echo    %~dp0..\dist\NavTools\NavTools.exe
 echo.
 echo To create the release zip, run:
 echo    scripts\create_release.bat

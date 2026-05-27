@@ -1,15 +1,15 @@
 """
-Jim — Interactive Voice Assistant for NavTools
+Jack — Interactive Voice Assistant for NavTools
 =================================================
 Uses Google Speech Recognition (accurate with Indian accent)
 and Windows SAPI5 for speech output.
 
 Flow:
-  1. User says "wake up Jim"
-  2. Jim responds: "What can I help you with today?"
+  1. User says "wake up Jack"
+  2. Jack responds: "What can I help you with today?"
   3. User speaks their command (e.g., "search for Python tutorials")
-  4. Jim executes and confirms vocally
-  5. Jim goes back to idle, waiting for "wake up Jim" again
+  4. Jack executes and confirms vocally
+  5. Jack goes back to idle, waiting for "wake up Jack" again
 
 Supports:
   - App launching (browser, calculator, notepad, etc.)
@@ -35,7 +35,9 @@ import os
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 
 # pythoncom and win32com are loaded lazily inside speak() to avoid
 # crashing the module if pywin32 is not installed.
@@ -44,7 +46,7 @@ import speech_recognition as sr
 from src.utils import setup_logger, PROJECT_ROOT, DATA_DIR
 from src.attention_state import attention
 
-logger = setup_logger("jim")
+logger = setup_logger("jack")
 
 
 # ──────────────────────────────────────────────
@@ -64,129 +66,144 @@ try:
     else:
         _kokoro_tts = None
         logger.warning("Kokoro TTS model files not found. Falling back to SAPI5.")
-except ImportError:
+except ImportError as e:
     _kokoro_tts = None
-    logger.warning("kokoro_onnx or sounddevice not installed. Falling back to SAPI5.")
+    logger.warning(f"kokoro_onnx or sounddevice not installed. Falling back to SAPI5. Error details: {e}")
 except Exception as e:
     _kokoro_tts = None
     logger.error(f"Error initializing Kokoro TTS: {e}")
 
 _speak_lock = threading.Lock()
+_active_assistant = None
 
 def speak(text: str):
     """Speak text using Kokoro TTS (high quality) or fallback to Windows SAPI5."""
-    logger.info(f"  [Jim]: \"{text}\"")
+    logger.info(f"  [Jack]: \"{text}\"")
     
-    with _speak_lock:
-        # Dynamic settings retrieval
-        v_name = attention.voice_name.lower()
-        speed_val = attention.voice_speed
-
-        if _kokoro_tts is not None:
-            try:
-                # Map standard voices to Kokoro profiles:
-                # - zira -> af_bella (soft female)
-                # - sarah -> af_sarah (natural female)
-                # - michael -> am_michael (natural male)
-                # - david -> am_adam (natural male)
-                kokoro_voice = "af_bella" # default soft female
-                if "sarah" in v_name:
-                    kokoro_voice = "af_sarah"
-                elif "michael" in v_name:
-                    kokoro_voice = "am_michael"
-                elif "david" in v_name or "male" in v_name:
-                    kokoro_voice = "am_adam"
-                elif "female" in v_name:
-                    kokoro_voice = "af_bella"
-
-                samples, sample_rate = _kokoro_tts.create(text, voice=kokoro_voice, speed=speed_val, lang="en-us")
-                sd.play(samples, sample_rate)
-                sd.wait()
-                return
-            except Exception as e:
-                logger.error(f"Kokoro TTS generation failed, falling back to SAPI5: {e}")
-                # Fallthrough to SAPI5...
-
-        # Try direct COM first for 0ms start latency fallback
+    global _active_assistant
+    if _active_assistant and _active_assistant.state_callback:
         try:
-            import pythoncom
-            import win32com.client
-            try:
-                pythoncom.CoInitialize()
-            except Exception:
-                pass # Already initialized in this thread
-            
-            voice = win32com.client.Dispatch("SAPI.SpVoice")
-            
-            # Match SAPI5 voices
-            voices = voice.GetVoices()
-            selected_voice = None
-            
-            # Fuzzy match voice name
-            for i in range(voices.Count):
-                v_desc = voices.Item(i).GetDescription().lower()
-                if "zira" in v_name or "female" in v_name:
-                    if "zira" in v_desc or "female" in v_desc or "hazel" in v_desc:
-                        selected_voice = voices.Item(i)
-                        break
-                elif "david" in v_name or "male" in v_name:
-                    if "david" in v_desc or "male" in v_desc or "adam" in v_desc:
-                        selected_voice = voices.Item(i)
-                        break
+            _active_assistant.state_callback("speaking")
+        except Exception:
+            pass
 
-            if selected_voice is None:
-                # Direct match fallback by gender
+    try:
+        with _speak_lock:
+            # Dynamic settings retrieval
+            v_name = attention.voice_name.lower()
+            speed_val = attention.voice_speed
+
+            if _kokoro_tts is not None:
+                try:
+                    # Map standard voices to Kokoro profiles:
+                    # - zira -> af_bella (soft female)
+                    # - sarah -> af_sarah (natural female)
+                    # - michael -> am_michael (natural male)
+                    # - david -> am_adam (natural male)
+                    kokoro_voice = "af_bella" # default soft female
+                    if "sarah" in v_name:
+                        kokoro_voice = "af_sarah"
+                    elif "michael" in v_name:
+                        kokoro_voice = "am_michael"
+                    elif "david" in v_name or "male" in v_name:
+                        kokoro_voice = "am_adam"
+                    elif "female" in v_name:
+                        kokoro_voice = "af_bella"
+
+                    samples, sample_rate = _kokoro_tts.create(text, voice=kokoro_voice, speed=speed_val, lang="en-us")
+                    sd.play(samples, sample_rate)
+                    sd.wait()
+                    return
+                except Exception as e:
+                    logger.error(f"Kokoro TTS generation failed, falling back to SAPI5: {e}")
+                    # Fallthrough to SAPI5...
+
+            # Try direct COM first for 0ms start latency fallback
+            try:
+                import pythoncom
+                import win32com.client
+                try:
+                    pythoncom.CoInitialize()
+                except Exception:
+                    pass # Already initialized in this thread
+                
+                voice = win32com.client.Dispatch("SAPI.SpVoice")
+                
+                # Match SAPI5 voices
+                voices = voice.GetVoices()
+                selected_voice = None
+                
+                # Fuzzy match voice name
                 for i in range(voices.Count):
                     v_desc = voices.Item(i).GetDescription().lower()
                     if "zira" in v_name or "female" in v_name:
-                        if "female" in v_desc:
+                        if "zira" in v_desc or "female" in v_desc or "hazel" in v_desc:
                             selected_voice = voices.Item(i)
                             break
-                    else:
-                        if "male" in v_desc:
+                    elif "david" in v_name or "male" in v_name:
+                        if "david" in v_desc or "male" in v_desc or "adam" in v_desc:
                             selected_voice = voices.Item(i)
                             break
 
-            if selected_voice is not None:
-                voice.Voice = selected_voice
+                if selected_voice is None:
+                    # Direct match fallback by gender
+                    for i in range(voices.Count):
+                        v_desc = voices.Item(i).GetDescription().lower()
+                        if "zira" in v_name or "female" in v_name:
+                            if "female" in v_desc:
+                                selected_voice = voices.Item(i)
+                                break
+                        else:
+                            if "male" in v_desc:
+                                selected_voice = voices.Item(i)
+                                break
 
-            # Map float speed (0.5..2.0) to SAPI5 Rate (-10..10)
+                if selected_voice is not None:
+                    voice.Voice = selected_voice
+
+                # Map float speed (0.5..2.0) to SAPI5 Rate (-10..10)
+                rate_val = max(-10, min(10, int((speed_val - 1.0) * 10)))
+                voice.Rate = rate_val
+                
+                voice.Speak(text)
+                return
+            except ImportError:
+                logger.debug("pywin32 not installed, skipping direct SAPI5 COM speech.")
+            except Exception as e:
+                logger.debug(f"Direct SAPI5 COM speech failed, falling back to PowerShell: {e}")
+
+            # Fallback to PowerShell subprocess
+            safe = text.replace("'", "''")
+            # Rate mapping for PowerShell synthesiser:
+            # Rate is also integer from -10 to 10
             rate_val = max(-10, min(10, int((speed_val - 1.0) * 10)))
-            voice.Rate = rate_val
             
-            voice.Speak(text)
-            return
-        except ImportError:
-            logger.debug("pywin32 not installed, skipping direct SAPI5 COM speech.")
-        except Exception as e:
-            logger.debug(f"Direct SAPI5 COM speech failed, falling back to PowerShell: {e}")
+            # Decide PowerShell voice snippet based on selected voice
+            voice_select_snippet = ""
+            if "zira" in v_name or "female" in v_name:
+                voice_select_snippet = '$s.SelectVoice(\'Microsoft Zira Desktop\');'
+            elif "david" in v_name or "male" in v_name:
+                voice_select_snippet = '$s.SelectVoice(\'Microsoft David Desktop\');'
 
-        # Fallback to PowerShell subprocess
-        safe = text.replace("'", "''")
-        # Rate mapping for PowerShell synthesiser:
-        # Rate is also integer from -10 to 10
-        rate_val = max(-10, min(10, int((speed_val - 1.0) * 10)))
-        
-        # Decide PowerShell voice snippet based on selected voice
-        voice_select_snippet = ""
-        if "zira" in v_name or "female" in v_name:
-            voice_select_snippet = '$s.SelectVoice(\'Microsoft Zira Desktop\');'
-        elif "david" in v_name or "male" in v_name:
-            voice_select_snippet = '$s.SelectVoice(\'Microsoft David Desktop\');'
-
-        cmd = (
-            f"powershell -Command \""
-            f"Add-Type -AssemblyName System.Speech; "
-            f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-            f"{voice_select_snippet} "
-            f"$s.Rate = {rate_val}; "
-            f"$s.Speak('{safe}')\""
-        )
-        try:
-            subprocess.run(cmd, shell=True, timeout=30,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            logger.error(f"  TTS error: {e}")
+            cmd = (
+                f"powershell -Command \""
+                f"Add-Type -AssemblyName System.Speech; "
+                f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                f"{voice_select_snippet} "
+                f"$s.Rate = {rate_val}; "
+                f"$s.Speak('{safe}')\""
+            )
+            try:
+                subprocess.run(cmd, shell=True, timeout=30,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e:
+                logger.error(f"  TTS error: {e}")
+    finally:
+        if _active_assistant and _active_assistant.state_callback:
+            try:
+                _active_assistant.state_callback(_active_assistant._state)
+            except Exception:
+                pass
 
 
 # ──────────────────────────────────────────────
@@ -271,10 +288,18 @@ VOICE_COMMANDS = {
     "open opera":          ("start_menu", "Opera", "Opening Opera"),
 
     # ── App Launches — Folders ──
-    "open downloads":      ("launch", "explorer Downloads", "Opening downloads folder"),
-    "open documents":      ("launch", "explorer Documents", "Opening documents folder"),
-    "open desktop":        ("launch", "explorer Desktop", "Opening desktop folder"),
-    "open pictures":       ("launch", "explorer Pictures", "Opening pictures folder"),
+    "open downloads":        ("open_custom_folder", "downloads", "Opening downloads folder"),
+    "open downloads folder":  ("open_custom_folder", "downloads", "Opening downloads folder"),
+    "open documents":        ("open_custom_folder", "documents", "Opening documents folder"),
+    "open documents folder":  ("open_custom_folder", "documents", "Opening documents folder"),
+    "open desktop":          ("open_custom_folder", "desktop", "Opening desktop folder"),
+    "open desktop folder":    ("open_custom_folder", "desktop", "Opening desktop folder"),
+    "open pictures":         ("open_custom_folder", "pictures", "Opening pictures folder"),
+    "open pictures folder":  ("open_custom_folder", "pictures", "Opening pictures folder"),
+    "open picture folder":   ("open_custom_folder", "pictures", "Opening pictures folder"),
+    "open music folder":     ("open_custom_folder", "music", "Opening music folder"),
+    "open videos folder":    ("open_custom_folder", "videos", "Opening videos folder"),
+    "open video folder":     ("open_custom_folder", "videos", "Opening video folder"),
 
     # ── Tab Navigation ──
     "next tab":            ("hotkey", "ctrl+tab", "Switching to next tab"),
@@ -382,14 +407,63 @@ VOICE_COMMANDS = {
     "next file":            ("select_nth_file", "next_select", "Selecting next file"),
     "previous file":        ("select_nth_file", "prev_select", "Selecting previous file"),
 
+    # ── Folder Selection (in File Explorer) ──
+    "open first folder":      ("select_nth_file", "1_open", "Opening the first folder"),
+    "open the first folder":  ("select_nth_file", "1_open", "Opening the first folder"),
+    "open second folder":     ("select_nth_file", "2_open", "Opening the second folder"),
+    "open the second folder": ("select_nth_file", "2_open", "Opening the second folder"),
+    "open third folder":      ("select_nth_file", "3_open", "Opening the third folder"),
+    "open the third folder":  ("select_nth_file", "3_open", "Opening the third folder"),
+    "open fourth folder":     ("select_nth_file", "4_open", "Opening the fourth folder"),
+    "open the fourth folder": ("select_nth_file", "4_open", "Opening the fourth folder"),
+    "open fifth folder":      ("select_nth_file", "5_open", "Opening the fifth folder"),
+    "open the fifth folder":  ("select_nth_file", "5_open", "Opening the fifth folder"),
+    "open last folder":       ("select_nth_file", "-1_open", "Opening the last folder"),
+    "open the last folder":   ("select_nth_file", "-1_open", "Opening the last folder"),
+    "select first folder":    ("select_nth_file", "1_select", "Selecting the first folder"),
+    "select the first folder":("select_nth_file", "1_select", "Selecting the first folder"),
+    "select second folder":   ("select_nth_file", "2_select", "Selecting the second folder"),
+    "select the second folder":("select_nth_file", "2_select", "Selecting the second folder"),
+    "select third folder":    ("select_nth_file", "3_select", "Selecting the third folder"),
+    "select last folder":     ("select_nth_file", "-1_select", "Selecting the last folder"),
+    "open next folder":       ("select_nth_file", "next_open", "Opening the next folder"),
+    "open previous folder":   ("select_nth_file", "prev_open", "Opening the previous folder"),
+    "next folder":            ("select_nth_file", "next_select", "Selecting next folder"),
+    "previous folder":        ("select_nth_file", "prev_select", "Selecting previous folder"),
+
+    # ── Selection and Deselection ──
+    "unselect folder":          ("deselect_item", "selected", "Unselecting selected folder"),
+    "unselect selected folder": ("deselect_item", "selected", "Unselecting selected folder"),
+    "unselect file":            ("deselect_item", "selected", "Unselecting selected file"),
+    "unselect selected file":   ("deselect_item", "selected", "Unselecting selected file"),
+    "deselect folder":          ("deselect_item", "selected", "Deselecting selected folder"),
+    "deselect file":            ("deselect_item", "selected", "Deselecting selected file"),
+    "unselect this":            ("deselect_item", "selected", "Unselecting this"),
+    "deselect this":            ("deselect_item", "selected", "Deselecting this"),
+    "deselect":                 ("deselect_item", "all", "Deselecting items"),
+    "unselect":                 ("deselect_item", "all", "Unselecting items"),
+    "unselect all":             ("deselect_item", "all", "Unselecting all items"),
+    "deselect all":             ("deselect_item", "all", "Deselecting all items"),
+
     # ── File Operations (on selected file in Explorer) ──
     "open selected file":   ("hotkey", "enter", "Opening selected file"),
     "open this file":       ("hotkey", "enter", "Opening this file"),
     "open it":              ("hotkey", "enter", "Opening it"),
+    "open folder":          ("hotkey", "enter", "Opening folder"),
+    "open selected folder": ("hotkey", "enter", "Opening selected folder"),
+    "open this folder":     ("hotkey", "enter", "Opening this folder"),
+    "go back a folder":     ("hotkey", "alt+left", "Going back"),
+    "back a folder":        ("hotkey", "alt+left", "Going back"),
+    "go back folder":       ("hotkey", "alt+left", "Going back"),
     "properties":           ("hotkey", "alt+enter", "Showing properties"),
     "file properties":      ("hotkey", "alt+enter", "Showing file properties"),
     "show properties":      ("hotkey", "alt+enter", "Showing properties"),
+    "show its properties":  ("hotkey", "alt+enter", "Showing properties"),
+    "folder properties":    ("hotkey", "alt+enter", "Showing properties"),
+    "show folder properties": ("hotkey", "alt+enter", "Showing properties"),
     "delete file":          ("hotkey", "delete", "Deleting file"),
+    "delete folder":        ("hotkey", "delete", "Deleting folder"),
+    "delete selected folder": ("hotkey", "delete", "Deleting folder"),
     "delete this":          ("hotkey", "delete", "Deleting"),
     "delete":               ("hotkey", "delete", "Deleting"),
     "permanent delete":     ("hotkey", "shift+delete", "Permanently deleting"),
@@ -402,8 +476,45 @@ VOICE_COMMANDS = {
     "new folder":           ("hotkey", "ctrl+shift+n", "Creating new folder"),
     "create folder":        ("hotkey", "ctrl+shift+n", "Creating new folder"),
 
+    # ── Task View & App Switching ──
+    "open task view":        ("task_view", "open", "Opening task view"),
+    "show task view":        ("task_view", "open", "Opening task view"),
+    "task view":             ("task_view", "open", "Opening task view"),
+    "close task view":       ("task_view", "close", "Closing task view"),
+    "exit task view":        ("task_view", "close", "Closing task view"),
+    "select app":            ("task_view", "select", "Selecting application"),
+    "select this app":       ("task_view", "select", "Selecting application"),
+    "open this app":         ("task_view", "select", "Selecting application"),
+    "choose app":            ("task_view", "select", "Selecting application"),
+    "next app":              ("task_view", "next", "Moving to next application"),
+    "next window":           ("task_view", "next", "Moving to next application"),
+    "select next application": ("task_view", "next", "Moving to next application"),
+    "previous app":          ("task_view", "prev", "Moving to previous application"),
+    "prev app":              ("task_view", "prev", "Moving to previous application"),
+    "select previous application": ("task_view", "prev", "Moving to previous application"),
+    "select app up":         ("task_view", "up", "Moving focus up"),
+    "move up":               ("task_view", "up", "Moving focus up"),
+    "go up":                 ("task_view", "up", "Moving focus up"),
+    "select app down":       ("task_view", "down", "Moving focus down"),
+    "move down":             ("task_view", "down", "Moving focus down"),
+    "go down":               ("task_view", "down", "Moving focus down"),
+
+    # ── Explorer Window Closing ──
+    "close file explorer":       ("close_explorer", "active", "Closing file explorer"),
+    "close the file explorer":   ("close_explorer", "active", "Closing the file explorer"),
+    "close explorer":            ("close_explorer", "active", "Closing explorer"),
+    "close active folder":       ("close_explorer", "active", "Closing active folder"),
+    "close folder":              ("close_explorer", "active", "Closing folder"),
+    "close open folders":        ("close_explorer", "all", "Closing open folders"),
+    "close all folders":         ("close_explorer", "all", "Closing all folders"),
+    "close all explorer windows": ("close_explorer", "all", "Closing all explorer windows"),
+
     # ── Close / Dismiss / Cancel ──
-    "close properties":     ("hotkey", "escape", "Closing properties"),
+    "close properties":             ("close_properties", None, "Closing properties"),
+    "close properties window":      ("close_properties", None, "Closing properties window"),
+    "close properties dialog":      ("close_properties", None, "Closing properties dialog"),
+    "close folder properties":      ("close_properties", None, "Closing properties"),
+    "close file properties":        ("close_properties", None, "Closing properties"),
     "close dialog":         ("hotkey", "escape", "Closing dialog"),
     "close popup":          ("hotkey", "escape", "Closing popup"),
     "close menu":           ("hotkey", "escape", "Closing menu"),
@@ -506,9 +617,9 @@ VOICE_COMMANDS = {
     "what can you do":     ("help", None, None),
     "help":                ("help", None, None),
     "help me":             ("help", None, None),
-    "stop listening":      ("sleep", None, "Going to sleep. Say wake up Jim when you need me."),
-    "go to sleep":         ("sleep", None, "Going to sleep. Say wake up Jim when you need me."),
-    "sleep":               ("sleep", None, "Going to sleep. Say wake up Jim when you need me."),
+    "stop listening":      ("sleep", None, "Going to sleep. Say wake up Jack when you need me."),
+    "go to sleep":         ("sleep", None, "Going to sleep. Say wake up Jack when you need me."),
+    "sleep":               ("sleep", None, "Going to sleep. Say wake up Jack when you need me."),
     "close the assistant": ("stop_assistant", None, "Shutting down. Goodbye!"),
     "stop the assistant":  ("stop_assistant", None, "Shutting down. Goodbye!"),
     "turn off the assistant":("stop_assistant", None, "Shutting down. Goodbye!"),
@@ -518,6 +629,111 @@ VOICE_COMMANDS = {
     "stop assistant":      ("stop_assistant", None, "Shutting down. Goodbye!"),
     "exit application":    ("stop_assistant", None, "Shutting down. Goodbye!"),
     "quit application":    ("stop_assistant", None, "Shutting down. Goodbye!"),
+
+    # ── Utilities & Shortcuts ──
+    "take screenshot":     ("take_screenshot", None, "Taking a screenshot"),
+    "take a screenshot":   ("take_screenshot", None, "Taking a screenshot"),
+    "capture screen":      ("take_screenshot", None, "Taking a screenshot"),
+    "screenshot":          ("take_screenshot", None, "Taking a screenshot"),
+    "lock screen":         ("lock_pc", None, "Locking the computer"),
+    "lock computer":       ("lock_pc", None, "Locking the computer"),
+    "lock pc":             ("lock_pc", None, "Locking the computer"),
+    "mute volume":         ("mute_unmute", "mute", "Muting volume"),
+    "mute audio":          ("mute_unmute", "mute", "Muting volume"),
+    "mute pc":             ("mute_unmute", "mute", "Muting volume"),
+    "mute":                ("mute_unmute", "mute", "Muting volume"),
+    "unmute volume":       ("mute_unmute", "unmute", "Restoring volume"),
+    "unmute audio":        ("mute_unmute", "unmute", "Restoring volume"),
+    "unmute pc":           ("mute_unmute", "unmute", "Restoring volume"),
+    "unmute":              ("mute_unmute", "unmute", "Restoring volume"),
+    "minimize all windows":("minimize_all", None, "Showing the desktop"),
+    "minimize windows":    ("minimize_all", None, "Showing the desktop"),
+    "show desktop":        ("minimize_all", None, "Showing the desktop"),
+    "hide windows":        ("minimize_all", None, "Showing the desktop"),
+    "maximize window":     ("maximize", None, "Maximizing window"),
+    "maximize":            ("maximize", None, "Maximizing window"),
+
+    # ── Date / Time / Info ──
+    "what time is it":     ("tell_time", None, None),
+    "what's the time":     ("tell_time", None, None),
+    "tell me the time":    ("tell_time", None, None),
+    "current time":        ("tell_time", None, None),
+    "time please":         ("tell_time", None, None),
+    "what date is it":     ("tell_date", None, None),
+    "what's the date":     ("tell_date", None, None),
+    "what is the date":    ("tell_date", None, None),
+    "tell me the date":    ("tell_date", None, None),
+    "today's date":        ("tell_date", None, None),
+    "current date":        ("tell_date", None, None),
+    "what day is it":      ("tell_day", None, None),
+    "what day is today":   ("tell_day", None, None),
+    "what's today":        ("tell_day", None, None),
+
+    # ── Battery ──
+    "battery status":      ("battery", None, None),
+    "battery level":       ("battery", None, None),
+    "check battery":       ("battery", None, None),
+    "how much battery":    ("battery", None, None),
+    "battery percentage":  ("battery", None, None),
+    "battery percent":     ("battery", None, None),
+
+    # ── System Power ──
+    "shutdown computer":   ("power", "shutdown", "Shutting down the computer in 10 seconds. Say cancel to abort."),
+    "shut down computer":  ("power", "shutdown", "Shutting down the computer in 10 seconds. Say cancel to abort."),
+    "shutdown the computer":("power", "shutdown", "Shutting down the computer in 10 seconds. Say cancel to abort."),
+    "shut down the computer":("power", "shutdown", "Shutting down the computer in 10 seconds. Say cancel to abort."),
+    "shutdown pc":         ("power", "shutdown", "Shutting down the computer in 10 seconds. Say cancel to abort."),
+    "shut down pc":        ("power", "shutdown", "Shutting down the computer in 10 seconds. Say cancel to abort."),
+    "turn off computer":   ("power", "shutdown", "Shutting down the computer in 10 seconds. Say cancel to abort."),
+    "turn off the computer":("power", "shutdown", "Shutting down the computer in 10 seconds. Say cancel to abort."),
+    "turn off pc":         ("power", "shutdown", "Shutting down the computer in 10 seconds. Say cancel to abort."),
+    "restart computer":    ("power", "restart", "Restarting the computer in 10 seconds. Say cancel to abort."),
+    "restart the computer":("power", "restart", "Restarting the computer in 10 seconds. Say cancel to abort."),
+    "restart pc":          ("power", "restart", "Restarting the computer in 10 seconds. Say cancel to abort."),
+    "reboot computer":     ("power", "restart", "Restarting the computer in 10 seconds. Say cancel to abort."),
+    "reboot the computer": ("power", "restart", "Restarting the computer in 10 seconds. Say cancel to abort."),
+    "reboot pc":           ("power", "restart", "Restarting the computer in 10 seconds. Say cancel to abort."),
+    "sleep computer":      ("power", "sleep_pc", "Putting the computer to sleep."),
+    "sleep the computer":  ("power", "sleep_pc", "Putting the computer to sleep."),
+    "sleep pc":            ("power", "sleep_pc", "Putting the computer to sleep."),
+    "put computer to sleep":("power", "sleep_pc", "Putting the computer to sleep."),
+    "cancel shutdown":     ("power", "cancel", "Shutdown cancelled."),
+    "cancel restart":      ("power", "cancel", "Restart cancelled."),
+    "abort shutdown":      ("power", "cancel", "Shutdown cancelled."),
+    "abort restart":       ("power", "cancel", "Restart cancelled."),
+
+    # ── Wi-Fi ──
+    "turn on wifi":        ("wifi", "on", "Turning on Wi-Fi"),
+    "turn off wifi":       ("wifi", "off", "Turning off Wi-Fi"),
+    "enable wifi":         ("wifi", "on", "Enabling Wi-Fi"),
+    "disable wifi":        ("wifi", "off", "Disabling Wi-Fi"),
+    "wifi on":             ("wifi", "on", "Turning on Wi-Fi"),
+    "wifi off":            ("wifi", "off", "Turning off Wi-Fi"),
+    "show wifi networks":  ("list_wifi", None, None),
+    "show wifi":           ("list_wifi", None, None),
+    "list wifi networks":  ("list_wifi", None, None),
+    "list wifi":           ("list_wifi", None, None),
+    "scan wifi":           ("list_wifi", None, None),
+    "scan wifi networks":  ("list_wifi", None, None),
+    "available wifi":      ("list_wifi", None, None),
+    "available networks":  ("list_wifi", None, None),
+    "show available networks": ("list_wifi", None, None),
+    "show available wifi":     ("list_wifi", None, None),
+    "what wifi networks are available": ("list_wifi", None, None),
+    "which wifi":          ("list_wifi", None, None),
+    "disconnect wifi":     ("disconnect_wifi", None, "Disconnecting from Wi-Fi"),
+    "disconnect from wifi":("disconnect_wifi", None, "Disconnecting from Wi-Fi"),
+    "disconnect network":  ("disconnect_wifi", None, "Disconnecting from Wi-Fi"),
+    "disconnect from network":("disconnect_wifi", None, "Disconnecting from Wi-Fi"),
+
+    # ── Brightness ──
+    "increase brightness": ("brightness", "up", "Increasing brightness"),
+    "decrease brightness": ("brightness", "down", "Decreasing brightness"),
+    "brightness up":       ("brightness", "up", "Increasing brightness"),
+    "brightness down":     ("brightness", "down", "Decreasing brightness"),
+    "maximum brightness":  ("brightness", "max", "Setting maximum brightness"),
+    "minimum brightness":  ("brightness", "min", "Setting minimum brightness"),
+    "full brightness":     ("brightness", "max", "Setting maximum brightness"),
 
     # ── Dynamic Launchers ──
     "launch eye tracking":    ("launch_gaze", None, "Launching gaze tracking mechanism"),
@@ -607,6 +823,55 @@ DYNAMIC_PREFIXES = [
     ("do a calculation of",   "calculate"),
     ("calculate",             "calculate"),
     ("do calculation of",      "calculate"),
+    ("set sensitivity to ",   "set_sensitivity"),
+    ("set the sensitivity to ","set_sensitivity"),
+    ("adjust sensitivity to ","set_sensitivity"),
+    ("adjust the sensitivity to ","set_sensitivity"),
+    ("change sensitivity to ","set_sensitivity"),
+    ("change the sensitivity to ","set_sensitivity"),
+    ("increase sensitivity to ","set_sensitivity"),
+    ("increase the sensitivity to ","set_sensitivity"),
+    ("decrease sensitivity to ","set_sensitivity"),
+    ("decrease the sensitivity to ","set_sensitivity"),
+    ("set sensitivity ",      "set_sensitivity"),
+    ("set the sensitivity ",  "set_sensitivity"),
+    ("sensitivity ",          "set_sensitivity"),
+    ("set voice speed to ",   "set_voice_speed"),
+    ("set the voice speed to ","set_voice_speed"),
+    ("set speed to ",         "set_voice_speed"),
+    ("change voice speed to ","set_voice_speed"),
+    ("change speed to ",      "set_voice_speed"),
+    ("increase speed to ",    "set_voice_speed"),
+    ("decrease speed to ",    "set_voice_speed"),
+    ("set voice speed ",      "set_voice_speed"),
+    ("set speed ",            "set_voice_speed"),
+    ("voice speed ",          "set_voice_speed"),
+    ("speed ",                "set_voice_speed"),
+    ("set volume to ",        "set_volume"),
+    ("set the volume to ",    "set_volume"),
+    ("change volume to ",     "set_volume"),
+    ("change the volume to ", "set_volume"),
+    ("adjust volume to ",     "set_volume"),
+    ("adjust the volume to ", "set_volume"),
+    ("set volume ",           "set_volume"),
+    ("set the volume ",       "set_volume"),
+    ("volume ",               "set_volume"),
+    ("set brightness to ",    "set_brightness"),
+    ("set the brightness to ","set_brightness"),
+    ("change brightness to ", "set_brightness"),
+    ("change the brightness to ","set_brightness"),
+    ("set brightness ",       "set_brightness"),
+    ("set the brightness ",   "set_brightness"),
+    ("brightness ",           "set_brightness"),
+    ("connect to wifi ",      "connect_wifi"),
+    ("connect to network ",   "connect_wifi"),
+    ("connect to the wifi ",  "connect_wifi"),
+    ("connect to the network ","connect_wifi"),
+    ("connect wifi ",         "connect_wifi"),
+    ("join wifi ",            "connect_wifi"),
+    ("join network ",         "connect_wifi"),
+    ("switch to wifi ",       "connect_wifi"),
+    ("switch wifi to ",       "connect_wifi"),
     ("search in explorer for", "find_file"),
     ("search in file explorer for", "find_file"),
     ("search in explorer",    "find_file"),
@@ -656,40 +921,68 @@ SEARCH_TARGET_SUFFIXES = [
 
 
 # ──────────────────────────────────────────────
-# WAKE PHRASE DETECTION
+# WAKE PHRASE DETECTION (optimised)
 # ──────────────────────────────────────────────
 
-WAKE_PHRASES = [
-    # Primary wake phrases
+# All known name-sounds that Google en-IN may produce for "Jim"
+_JIM_SOUNDS = frozenset({
+    "jim", "gym", "gem", "tim", "him", "dim", "vim", "gin",
+    "gm", "jm", "gy", "gi", "gim", "jeem", "geem",
+    # Common Google Speech Indian-accent mishears
+    "hygiene", "jeans", "jean", "gene", "chin", "shin",
+    "slim", "chime", "jam", "gum", "zoom", "jig",
+    "chimb", "jib", "gimp", "jimp",
+    # Calibration-discovered mishears (user's actual voice)
+    "jack", "jac", "jak",
+    # Single-syllable sounds Google produces
+    "team", "deem", "seem", "theme",
+})
+
+# Trigger/context words that appear alongside the name
+_WAKE_TRIGGERS = frozenset({
+    "wake", "woke", "waking", "up", "hey", "hi", "hello",
+    "wakey", "yo", "ok", "okay", "hay", "haye",
+    "breakup", "makeup", "because", "a",
+})
+
+# Pre-built frozenset of full wake phrases for O(1) lookup
+WAKE_PHRASES = frozenset({
+    # ── Full phrases ──
     "wake up jim", "wake up gym", "wake up gem",
     "wake up tim", "wake up him", "wake up team",
-    "wakeup jim", "wake of jim",
-    # "hey jim" / "hi jim" variants
-    "hey jim", "hey gym", "hey gem", "hey tim",
-    "hi jim", "hi gym", "hi gem", "hi tim",
-    "a jim", "a gym",
-    # "wakey wakey" / "wakey wakey jim" variants
+    "wake up dim", "wake up gim", "wake up jeem",
+    "wakeup jim", "wakeup gym", "wake of jim", "wake of gym",
+    "hey jim", "hey gym", "hey gem", "hey tim", "hey him",
+    "hey dim", "hey gin", "hey vim", "hey gim", "hey jeem",
+    "hi jim", "hi gym", "hi gem", "hi tim", "hi him",
+    "hi dim", "hi gim",
+    "hello jim", "hello gym", "hello gem",
+    "yo jim", "yo gym",
+    "ok jim", "ok gym", "okay jim", "okay gym",
+    "a jim", "a gym", "a gem",
     "wakey wakey jim", "wakey wakey gym", "wakey wakey gem", "wakey wakey",
-    # "wake up" alone (no name needed)
-    "wake up",
-    # Name only
-    "jim", "gym", "gem", "tim",
-    # Observed Google Speech mishears (Indian English accent)
-    # Google often hears "jim" as "hygiene" / "jeans" / "jean" / "gene"
+    "wake up", "wakeup",
+    # ── Name only (short triggers) ──
+    "jim", "gym", "gem", "tim", "gim", "jeem", "geem",
+    # ── Google Speech Indian-accent mishears ──
     "hygiene", "hey hygiene", "wake up hygiene", "hi hygiene",
-    "jeans", "hey jeans", "wake up jeans",
-    "jean", "hey jean", "wake up jean",
-    "gene", "hey gene", "wake up gene",
-    "gin", "hey gin", "wake up gin",
-    "dim", "hey dim",
-    "him", "hey him",
-    "vim", "hey vim",
-    # Compound mishears
-    "breakup gym", "break up gym", "breakup jim",
-    "makeup gym", "make up gym",
+    "jeans", "hey jeans", "wake up jeans", "hi jeans",
+    "jean", "hey jean", "wake up jean", "hi jean",
+    "gene", "hey gene", "wake up gene", "hi gene",
+    "gin", "hey gin", "wake up gin", "hi gin",
+    "chin", "hey chin", "wake up chin",
+    "shin", "hey shin", "wake up shin",
+    "chime", "hey chime", "wake up chime",
+    # ── Compound mishears ──
+    "breakup gym", "break up gym", "breakup jim", "break up jim",
+    "makeup gym", "make up gym", "makeup jim", "make up jim",
     "because gym", "because jim",
-    "waking gym", "waking jim",
-]
+    "waking gym", "waking jim", "waking up gym", "waking up jim",
+    # ── Calibration-discovered (user's actual voice) ──
+    "jack", "jack jack", "hey jack", "hi jack", "hello jack",
+    "wake up jack", "wakeup jack", "ok jack", "okay jack",
+    "yo jack", "a jack",
+})
 
 STATE_IDLE      = "idle"
 STATE_LISTENING = "listening"
@@ -697,16 +990,62 @@ STATE_SLEEPING  = "sleeping"
 
 
 def _contains_wake(text: str) -> bool:
-    """Check if any wake phrase variant appears in the text."""
-    text = text.lower().strip().strip('.?!,;:-_`"\'')
+    """Check if any wake phrase variant appears in the text.
+
+    Uses a three-tier strategy:
+      1. Exact full-string match against frozenset  (fastest)
+      2. Substring scan for each known phrase        (catches embedded wake words)
+      3. Fuzzy word-level match                      (catches unknown combos)
+    """
+    cleaned = text.lower().strip().strip('.?!,;:-_`"\'')
+
+    # Tier 1: exact full-string match (O(1))
+    if cleaned in WAKE_PHRASES:
+        return True
+
+    # Tier 2: substring containment (handles "um wake up jim please")
     for phrase in WAKE_PHRASES:
-        if phrase in text:
+        if len(phrase) > 2 and phrase in cleaned:
             return True
-    # Fuzzy: "jim"/"gym" near "wake"/"hey"/"up"/"hi"/"wakey"
-    words = set(text.split())
-    primary = {"jim", "gym", "gem", "tim"}
-    secondary = {"wake", "woke", "up", "hey", "hi", "wakey"}
-    return bool(words & primary) and bool(words & secondary)
+
+    # Tier 3: fuzzy word-level — any Jim-sound + any trigger word
+    words = set(cleaned.split())
+    if words & _JIM_SOUNDS and words & _WAKE_TRIGGERS:
+        return True
+
+    # Tier 4: phonetic proximity — single word within 1 edit of "jim"
+    for w in words:
+        if len(w) <= 4 and w not in {"the", "and", "for", "but", "not", "you", "are"}:
+            if _is_near_jim(w):
+                return True
+
+    return False
+
+
+def _is_near_jim(word: str) -> bool:
+    """Check if a word is within 1 character edit of 'jack', 'jim' or 'gym'."""
+    targets = ("jack", "jim", "gym")
+    for t in targets:
+        if word == t:
+            return True
+        if len(word) == len(t):
+            diffs = sum(a != b for a, b in zip(word, t))
+            if diffs <= 1:
+                return True
+        elif abs(len(word) - len(t)) == 1:
+            # One insertion or deletion
+            longer, shorter = (word, t) if len(word) > len(t) else (t, word)
+            i = j = misses = 0
+            while i < len(longer) and j < len(shorter):
+                if longer[i] != shorter[j]:
+                    misses += 1
+                    i += 1
+                else:
+                    i += 1
+                    j += 1
+            if misses <= 1:
+                return True
+    return False
 
 
 def _strip_wake(text: str) -> str:
@@ -719,53 +1058,183 @@ def _strip_wake(text: str) -> str:
     return text.strip('.?!,;:-_`"\'')
 
 
+def _parse_number_from_text(text: str):
+    """Parse text containing numbers (either digits like '400' or words like 'four hundred') into a float/int."""
+    if not text:
+        return None
+    import re
+    # Check if there is a digit (integer or decimal) in the text first
+    digit_match = re.findall(r'\d+\.\d+|\d+', text)
+    if digit_match:
+        try:
+            return float(digit_match[0])
+        except ValueError:
+            pass
+
+    # If no digits found, parse spoken English words
+    words = text.lower().replace("-", " ").split()
+    
+    num_words = {
+        "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+        "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+        "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+        "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90
+    }
+    
+    multipliers = {
+        "hundred": 100,
+        "thousand": 1000
+    }
+    
+    total = 0
+    current = 0
+    found_any = False
+    
+    for word in words:
+        if word in num_words:
+            current += num_words[word]
+            found_any = True
+        elif word in multipliers:
+            factor = multipliers[word]
+            if current == 0:
+                current = 1
+            current *= factor
+            total += current
+            current = 0
+            found_any = True
+        elif word == "point":
+            found_any = True
+            try:
+                idx = words.index(word)
+                decimal_part = 0.0
+                divisor = 10.0
+                for dec_word in words[idx+1:]:
+                    if dec_word in num_words and num_words[dec_word] < 10:
+                        decimal_part += num_words[dec_word] / divisor
+                        divisor *= 10.0
+                    else:
+                        break
+                total += current + decimal_part
+                return total
+            except Exception:
+                pass
+            
+    total += current
+    return total if found_any else None
+
+
 # ──────────────────────────────────────────────
 # JIM VOICE ASSISTANT
 # ──────────────────────────────────────────────
 
 class VoiceAssistant(threading.Thread):
     """
-    Interactive voice assistant named Jim.
+    Interactive voice assistant named Jack.
     Uses Google Speech Recognition (en-IN) + Windows SAPI5 TTS.
     """
 
     def __init__(self, require_attention=True, ui_callback=None, state_callback=None, **kwargs):
         super().__init__(daemon=True, name="VoiceAssistant")
+        global _active_assistant
+        _active_assistant = self
         self.require_attention = require_attention
         self.ui_callback = ui_callback
         self.state_callback = state_callback
         self._running = False
         self._state = STATE_IDLE
         self.gaze_tracker = None
+        self._api_errors = 0          # Track consecutive API failures
 
-        # Speech recognizer
+        # Speech recognizer — tuned for responsiveness
         self._recognizer = sr.Recognizer()
         self._recognizer.energy_threshold = 400
         self._recognizer.dynamic_energy_threshold = False
-        self._recognizer.pause_threshold = 0.8
+        self._recognizer.pause_threshold = 0.6        # Faster phrase-end detection
+        self._recognizer.non_speaking_duration = 0.4   # Less silence needed to start
 
-    def _listen(self, mic, timeout=5, phrase_time_limit=6) -> str:
-        """Listen to microphone and return transcribed text."""
+    def _listen(self, mic, timeout=5, phrase_time_limit=6, for_wake=False) -> str:
+        """Listen to microphone and return transcribed text.
+
+        Args:
+            for_wake: If True, request multiple alternatives from Google
+                      to improve wake-word hit rate.
+        """
         try:
-            # Synchronize microphone sensitivity dynamically
             self._recognizer.energy_threshold = attention.mic_sensitivity
-            logger.info(f"  (listening with sensitivity {self._recognizer.energy_threshold}...)")
+            if not for_wake:
+                logger.info(f"  (listening with sensitivity {self._recognizer.energy_threshold}...)")
             audio = self._recognizer.listen(
                 mic, timeout=timeout,
                 phrase_time_limit=phrase_time_limit
             )
             audio_len = len(audio.get_raw_data())
+            # Skip very short audio (< 0.3s) — likely noise bursts
+            if audio_len < 9600:
+                return ""
             logger.info(f"  (got {audio_len/32000:.1f}s audio, recognizing...)")
 
             try:
-                text = self._recognizer.recognize_google(audio, language="en-IN")
-                logger.info(f"  >>> YOU SAID: \"{text}\"")
-                return text.lower().strip()
+                if for_wake:
+                    # Request multiple alternatives for better wake-word matching
+                    results = self._recognizer.recognize_google(
+                        audio, language="en-IN", show_all=True
+                    )
+                    if not results or not isinstance(results, dict):
+                        return ""
+                    alternatives = results.get("alternative", [])
+                    # Check ALL alternatives for wake phrase
+                    for alt in alternatives:
+                        transcript = alt.get("transcript", "").lower().strip()
+                        if transcript and _contains_wake(transcript):
+                            logger.info(f'  >>> YOU SAID: "{transcript}" (wake detected)')
+                            self._api_errors = 0
+                            return transcript
+                    # No wake phrase found — return top transcript anyway
+                    if alternatives:
+                        top = alternatives[0].get("transcript", "").lower().strip()
+                        if top:
+                            logger.info(f'  >>> YOU SAID: "{top}"')
+                            self._api_errors = 0
+                            return top
+                    return ""
+                else:
+                    text = self._recognizer.recognize_google(audio, language="en-IN")
+                    logger.info(f'  >>> YOU SAID: "{text}"')
+                    self._api_errors = 0
+                    return text.lower().strip()
+
             except sr.UnknownValueError:
                 logger.info("  (could not understand)")
                 return ""
             except sr.RequestError as e:
-                logger.info(f"  (Google error: {e})")
+                self._api_errors += 1
+                logger.warning(f"  (Google API error #{self._api_errors}: {e})")
+
+                # Check actual internet connectivity
+                online = self._check_internet()
+
+                # Decide whether to speak to the user
+                # Repeat the offline/error message after every second try (less spammy)
+                should_speak = (self._api_errors % 2 == 0)
+
+                if should_speak:
+                    if self.state_callback: self.state_callback("speaking")
+                    if not online:
+                        speak("I can't reach the internet right now. Please check your Wi-Fi or network connection. I'll keep trying.")
+                    else:
+                        speak("I'm having trouble connecting to the speech service. The internet seems fine, so this may be a temporary issue.")
+                    if self.state_callback: self.state_callback(self._state)
+
+                # Back off — longer when offline to save resources
+                if self._api_errors >= 3:
+                    if online:
+                        backoff = min(5, self._api_errors - 2)
+                    else:
+                        backoff = min(15, self._api_errors)
+                    logger.warning(f"  (backing off {backoff}s — {'online' if online else 'OFFLINE'})")
+                    time.sleep(backoff)
                 return ""
 
         except sr.WaitTimeoutError:
@@ -773,6 +1242,16 @@ class VoiceAssistant(threading.Thread):
         except Exception as e:
             logger.error(f"  Listen error: {type(e).__name__}: {e}")
             return ""
+    @staticmethod
+    def _check_internet(timeout=2) -> bool:
+        """Quick internet connectivity check via socket to Google DNS."""
+        import socket
+        try:
+            sock = socket.create_connection(("8.8.8.8", 53), timeout=timeout)
+            sock.close()
+            return True
+        except OSError:
+            return False
 
     def set_state(self, new_state: str):
         self._state = new_state
@@ -785,7 +1264,7 @@ class VoiceAssistant(threading.Thread):
 
         # Greeting BEFORE opening mic
         if self.state_callback: self.state_callback("speaking")
-        speak("Jim assistant is online. Say wake up Jim or hey Jim to activate me.")
+        speak("Jack assistant is online. Say wake up Jack or hey Jack to activate me.")
         if self.state_callback: self.state_callback(STATE_IDLE)
 
         # ── Open Microphone ─────────────────────────────────────────
@@ -804,7 +1283,6 @@ class VoiceAssistant(threading.Thread):
             mic = sr.Microphone()
             mic_source = mic.__enter__()
             logger.info("  Microphone opened successfully.")
-            # Quick ambient noise adjustment so the recogniser calibrates
             logger.info("  Adjusting for ambient noise (1s)...")
             self._recognizer.adjust_for_ambient_noise(mic_source, duration=1)
             logger.info(f"  Energy threshold set to {self._recognizer.energy_threshold:.0f}")
@@ -820,58 +1298,76 @@ class VoiceAssistant(threading.Thread):
             return
 
         logger.info("=" * 55)
-        logger.info("  Jim Voice Assistant -- READY")
-        logger.info("  Say \"wake up Jim\" to activate")
+        logger.info("  Jack Voice Assistant -- READY")
+        logger.info('  Say "wake up Jack" to activate')
         logger.info("=" * 55)
 
         try:
             while self._running:
                 # Attention gate
                 if self.require_attention and not attention.is_attentive:
-                    time.sleep(0.5)
+                    time.sleep(0.3)
                     continue
 
-                # Listen for audio
-                try:
-                    text = self._listen(mic_source, timeout=3, phrase_time_limit=5)
-                except Exception as e:
-                    logger.error(f"  Listen cycle error: {type(e).__name__}: {e}")
-                    time.sleep(1)
-                    continue
-
-                if not text:
-                    continue
-
-                # ── SLEEPING ──
+                # ── SLEEPING — only wake phrase wakes up ──
                 if self._state == STATE_SLEEPING:
-                    if _contains_wake(text):
+                    text = self._listen(mic_source, timeout=3, phrase_time_limit=4, for_wake=True)
+                    if text and _contains_wake(text):
                         self.set_state(STATE_IDLE)
-                        logger.info("  Jim woke up from sleep")
-                    else:
+                        logger.info("  Jack woke up from sleep")
+                        if self.state_callback: self.state_callback("speaking")
+                        speak("I'm back. What can I help you with?")
+                        if self.state_callback: self.state_callback(STATE_IDLE)
+                    continue
+
+                # ── IDLE — listen for wake phrase with short timeout ──
+                if self._state == STATE_IDLE:
+                    text = self._listen(mic_source, timeout=2, phrase_time_limit=4, for_wake=True)
+                    if not text:
                         continue
 
-                # ── IDLE: waiting for wake phrase ──
-                if self._state == STATE_IDLE:
                     if _contains_wake(text):
                         after_wake = _strip_wake(text)
+                        
+                        # Set to active listening state
+                        self.set_state(STATE_LISTENING)
+                        
                         if after_wake and len(after_wake) > 2:
+                            # User said wake phrase + command in one go
                             if self.state_callback: self.state_callback("speaking")
-                            speak("What can I help you with today?")
-                            self.set_state(STATE_IDLE)
+                            # Process first command
                             self._process_command(after_wake)
+                            # Now enter active 10s conversation window
+                            self._run_conversation_window(mic_source)
                         else:
-                            self.set_state(STATE_LISTENING)
+                            # Wake phrase only — listen for command
                             if self.state_callback: self.state_callback("speaking")
                             speak("What can I help you with today?")
                             if self.state_callback: self.state_callback(STATE_LISTENING)
-                            cmd = self._listen(mic_source, timeout=8, phrase_time_limit=8)
+
+                            # Give generous timeout for command
+                            cmd = self._listen(mic_source, timeout=8, phrase_time_limit=10)
                             if cmd:
-                                logger.info(f"  >>> COMMAND: \"{cmd}\"")
+                                logger.info(f'  >>> COMMAND: "{cmd}"')
                                 self._process_command(cmd)
+                                # Enter active 10s conversation window
+                                self._run_conversation_window(mic_source)
                             else:
+                                # Second chance — maybe user was slow to speak
                                 if self.state_callback: self.state_callback("speaking")
-                                speak("I didn't catch that. Say hey Jim to try again.")
-                            self.set_state(STATE_IDLE)
+                                speak("I'm still listening.")
+                                if self.state_callback: self.state_callback(STATE_LISTENING)
+                                cmd = self._listen(mic_source, timeout=6, phrase_time_limit=8)
+                                if cmd:
+                                    logger.info(f'  >>> COMMAND (2nd try): "{cmd}"')
+                                    self._process_command(cmd)
+                                    # Enter active 10s conversation window
+                                    self._run_conversation_window(mic_source)
+                                else:
+                                    if self.state_callback: self.state_callback("speaking")
+                                    speak("I didn't catch that. Say hey Jack to try again.")
+                        # Return to IDLE state after conversation window ends
+                        self.set_state(STATE_IDLE)
                     continue
 
         except KeyboardInterrupt:
@@ -883,8 +1379,48 @@ class VoiceAssistant(threading.Thread):
                 except Exception:
                     pass
             if self.state_callback: self.state_callback("speaking")
-            speak("Jim signing off. Goodbye.")
-            logger.info("Jim assistant stopped")
+            speak("Jack signing off. Goodbye.")
+            logger.info("Jack assistant stopped")
+
+    def _run_conversation_window(self, mic_source):
+        """Remain in active listening state for a 10s window to handle follow-up commands without wake word."""
+        start_t = time.time()
+        logger.info("  Starting 10-second active conversation window...")
+        
+        while self._running:
+            if self._state != STATE_LISTENING:
+                logger.info(f"  State changed to {self._state}. Exiting active conversation window.")
+                break
+
+            # Check attention gating if required
+            if self.require_attention and not attention.is_attentive:
+                time.sleep(0.3)
+                continue
+
+            now = time.time()
+            elapsed = now - start_t
+            if elapsed >= 10.0:
+                logger.info("  10-second active window expired. Reverting to standby.")
+                if self.state_callback: self.state_callback("speaking")
+                speak("Going to standby.")
+                break
+                
+            # Listen with timeout equal to remaining window time, capped at 3s for responsiveness
+            timeout = min(3.0, max(1.0, 10.0 - elapsed))
+            
+            cmd = self._listen(mic_source, timeout=timeout, phrase_time_limit=8)
+            if cmd:
+                logger.info(f'  >>> FOLLOW-UP COMMAND: "{cmd}"')
+                
+                # Process user command
+                self._process_command(cmd)
+                
+                # Reset the 10-second active window timer!
+                start_t = time.time()
+                logger.info("  Resetting 10-second active conversation window.")
+            else:
+                # Brief sleep to prevent tight CPU looping
+                time.sleep(0.1)
 
     def stop(self):
         self._running = False
@@ -900,7 +1436,163 @@ class VoiceAssistant(threading.Thread):
             self._execute(action_type, arg, response)
             return
 
-        # 2. Check dynamic prefix commands (search, find, type, go to)
+        # 2. Check for link/result clicking with a number (e.g. "click link three", "click link 3", "click result two", "click result 2")
+        # Check for file selection with a number (e.g. "select file four", "select file 4", "open file five", "open file 5")
+        clean_text = text.replace("-", " ")
+        
+        # 2a. Click nth link / result
+        link_patterns = [
+            "click link ", "click the link ", "open link ", "open the link ",
+            "click result ", "click the result ", "open result ", "open the result "
+        ]
+        for pat in link_patterns:
+            if clean_text.startswith(pat):
+                num_part = clean_text[len(pat):].strip()
+                val = _parse_number_from_text(num_part)
+                if val is not None:
+                    n = int(val)
+                    self._execute("click_nth_link", str(n), f"Clicking link {n}")
+                    return
+
+        # 2b. Dynamic select/open nth file/folder/item parser
+        # Matches: "select the fifth folder", "select the last folder", "open folder 3", "select folder number 5", etc.
+        import re
+        pattern1 = r'^(select|open)\s+(?:the\s+)?(\w+|\d+)(?:st|nd|rd|th)?\s+(folder|file|item)$'
+        pattern2 = r'^(select|open)\s+(?:the\s+)?(folder|file|item)\s+(?:number\s+)?(\w+|\d+)$'
+        
+        m1 = re.match(pattern1, clean_text)
+        m2 = re.match(pattern2, clean_text)
+        
+        matched = False
+        action = None
+        n = None
+        item_type = None
+        
+        ordinals_map = {
+            "first": 1, "1st": 1,
+            "second": 2, "2nd": 2,
+            "third": 3, "3rd": 3,
+            "fourth": 4, "4th": 4,
+            "fifth": 5, "5th": 5,
+            "sixth": 6, "6th": 6,
+            "seventh": 7, "7th": 7,
+            "eighth": 8, "8th": 8,
+            "ninth": 9, "9th": 9,
+            "tenth": 10, "10th": 10,
+            "last": -1
+        }
+        
+        if m1:
+            action = m1.group(1)
+            num_part = m1.group(2)
+            item_type = m1.group(3)
+            
+            if num_part.isdigit():
+                n = int(num_part)
+                matched = True
+            elif num_part in ordinals_map:
+                n = ordinals_map[num_part]
+                matched = True
+            else:
+                val = _parse_number_from_text(num_part)
+                if val is not None:
+                    n = int(val)
+                    matched = True
+        elif m2:
+            action = m2.group(1)
+            item_type = m2.group(2)
+            num_part = m2.group(3)
+            
+            if num_part.isdigit():
+                n = int(num_part)
+                matched = True
+            elif num_part in ordinals_map:
+                n = ordinals_map[num_part]
+                matched = True
+            else:
+                val = _parse_number_from_text(num_part)
+                if val is not None:
+                    n = int(val)
+                    matched = True
+                    
+        if matched and n is not None:
+            label = "last" if n == -1 else str(n)
+            resp = f"{'Opening' if action == 'open' else 'Selecting'} {item_type} {label}"
+            self._execute("select_nth_file", f"{n}_{action}", resp)
+            return
+
+        # 2c. Check for dynamic drive commands (e.g. "open c drive", "open local disk d", "open drive e", "open c")
+        import re
+        drive_patterns = [
+            r'^open\s+(local disk|disk|drive)\s+([a-z])$',
+            r'^open\s+([a-z])\s+(disk|drive)$'
+        ]
+        for pat in drive_patterns:
+            m = re.match(pat, clean_text)
+            if m:
+                g1, g2 = m.group(1), m.group(2)
+                letter = g1.upper() if len(g1.strip()) == 1 else g2.upper()
+                path = f"{letter}:\\"
+                if os.path.exists(path):
+                    self._execute("open_drive", path, f"Opening drive {letter}")
+                    return
+                    
+        # Single letter drive shortcut: "open c", "open d"
+        if clean_text.startswith("open ") and len(clean_text) == 6:
+            letter = clean_text[5].upper()
+            if 'A' <= letter <= 'Z':
+                path = f"{letter}:\\"
+                if os.path.exists(path):
+                    self._execute("open_drive", path, f"Opening drive {letter}")
+                    return
+
+        # 2d. Check for folder opening commands
+        # E.g. "open folder downloads", "open python folder", "open downloads folder"
+        if clean_text.startswith("open folder "):
+            folder_name = clean_text[len("open folder "):].strip()
+            self._execute("open_custom_folder", folder_name, f"Opening folder {folder_name}")
+            return
+        elif clean_text.startswith("open ") and clean_text.endswith(" folder"):
+            folder_name = clean_text[5:-7].strip()
+            self._execute("open_custom_folder", folder_name, f"Opening folder {folder_name}")
+            return
+
+        # 2e. Check for folder/drive/explorer closing commands
+        # E.g. "close disk d", "close downloads folder", "close drive c", "close downloads"
+        if clean_text.startswith("close "):
+            target = clean_text[6:].strip()
+            exclude_close = {
+                "properties", "properties window", "properties dialog", "folder properties", "file properties",
+                "dialog", "popup", "menu", "window", "this", "it", "assistant", "the assistant", "program", "app", 
+                "application", "calculator", "notepad", "chrome", "edge", "firefox", "brave", "opera", "word", 
+                "excel", "powerpoint", "outlook", "teams", "onenote", "steam", "discord", "spotify", "telegram", 
+                "whatsapp", "zoom", "nvidia", "obs", "vlc", "vs code", "visual studio", "photoshop", "premiere", 
+                "blender", "unity", "epic games"
+            }
+            if target not in exclude_close:
+                # Check if target matches explorer/file explorer
+                if target in ("file explorer", "the file explorer", "explorer", "active folder", "active explorer", "folder"):
+                    self._execute("close_explorer", "active", "Closing active File Explorer window")
+                    return
+                elif target in ("all folders", "all explorer windows", "all file explorers", "all file explorer windows"):
+                    self._execute("close_explorer", "all", "Closing all File Explorer windows")
+                    return
+                
+                # Check for drive letter pattern, e.g. "disk d", "drive c", "local disk c", "c drive", "d"
+                drive_match = re.match(r'^(?:local disk|disk|drive)?\s*([a-z])(?:\s+drive|\s+disk)?$', target)
+                if drive_match:
+                    letter = drive_match.group(1).upper()
+                    self._execute("close_explorer", f"drive:{letter}", f"Closing drive {letter} window")
+                    return
+                
+                # Otherwise, treat as folder name
+                folder_name = target
+                if folder_name.endswith(" folder"):
+                    folder_name = folder_name[:-7].strip()
+                self._execute("close_explorer", f"folder:{folder_name}", f"Closing folder {folder_name} window")
+                return
+
+        # 3. Check dynamic prefix commands (search, find, type, go to)
         for prefix, action in DYNAMIC_PREFIXES:
             if text.startswith(prefix):
                 query = text[len(prefix):].strip()
@@ -1016,8 +1708,6 @@ class VoiceAssistant(threading.Thread):
 
             speak(f"Playing {query}")
             try:
-                import urllib.request
-                import urllib.parse
                 import re
                 
                 query_string = urllib.parse.urlencode({"search_query": query})
@@ -1230,6 +1920,323 @@ class VoiceAssistant(threading.Thread):
             except Exception as e:
                 logger.error(f"Failed to dynamically open application via Start Menu search: {e}")
 
+        elif action == "connect_wifi":
+            network_name = query.strip()
+            speak(f"Connecting to {network_name}")
+            try:
+                # First, try to find the best matching network from available list
+                result = subprocess.run(
+                    'netsh wlan show networks',
+                    shell=True, capture_output=True, text=True, timeout=10
+                )
+                available = []
+                for line in result.stdout.splitlines():
+                    line = line.strip()
+                    if line.startswith('SSID') and ':' in line:
+                        ssid = line.split(':', 1)[1].strip()
+                        if ssid:  # Skip empty SSIDs
+                            available.append(ssid)
+
+                # Try exact match first, then fuzzy match
+                matched_ssid = None
+                for ssid in available:
+                    if ssid.lower() == network_name.lower():
+                        matched_ssid = ssid
+                        break
+                if not matched_ssid:
+                    for ssid in available:
+                        if network_name.lower() in ssid.lower() or ssid.lower() in network_name.lower():
+                            matched_ssid = ssid
+                            break
+
+                if matched_ssid:
+                    # Check if a saved profile exists for this network
+                    profile_check = subprocess.run(
+                        f'netsh wlan show profile name="{matched_ssid}"',
+                        shell=True, capture_output=True, text=True, timeout=10
+                    )
+                    if profile_check.returncode == 0:
+                        # Profile exists, connect directly
+                        connect_result = subprocess.run(
+                            f'netsh wlan connect name="{matched_ssid}"',
+                            shell=True, capture_output=True, text=True, timeout=15
+                        )
+                        if 'successfully' in connect_result.stdout.lower() or connect_result.returncode == 0:
+                            speak(f"Connected to {matched_ssid}")
+                            logger.info(f"  ✓ Connected to Wi-Fi: {matched_ssid}")
+                        else:
+                            speak(f"I found {matched_ssid} but couldn't connect. It may require a password.")
+                            logger.warning(f"  Wi-Fi connect failed: {connect_result.stdout} {connect_result.stderr}")
+                    else:
+                        # No saved profile — open Windows Wi-Fi settings panel
+                        speak(f"I found {matched_ssid} but it requires a password. Opening Wi-Fi settings so you can connect.")
+                        subprocess.Popen('start ms-settings:network-wifi', shell=True)
+                else:
+                    # Network not found in scan
+                    if available:
+                        # Suggest similar names
+                        top_names = available[:5]
+                        names_str = ", ".join(top_names)
+                        speak(f"I couldn't find a network called {network_name}. Available networks are: {names_str}")
+                    else:
+                        speak(f"I couldn't find any Wi-Fi networks. Make sure Wi-Fi is turned on.")
+            except Exception as e:
+                logger.error(f"Wi-Fi connect failed: {e}")
+                speak(f"Sorry, I had trouble connecting to {network_name}.")
+
+        elif action == "set_sensitivity":
+            # Extract number from query like "400" or "set sensitivity to 400"
+            val = _parse_number_from_text(query)
+            if val is not None:
+                val = int(val)
+                val = max(50, min(4000, val))  # Clamp to reasonable range
+                attention.mic_sensitivity = val
+                speak(f"Microphone sensitivity set to {val}")
+                logger.info(f"  Mic sensitivity changed to {val}")
+            else:
+                speak(f"Sorry, I couldn't understand the sensitivity value. Please say a number between 50 and 4000.")
+
+        elif action == "set_voice_speed":
+            val = _parse_number_from_text(query)
+            if val is not None:
+                val = float(val)
+                val = max(0.5, min(3.0, val))  # Clamp to reasonable range
+                attention.voice_speed = val
+                speak(f"Voice speed set to {val}")
+                logger.info(f"  Voice speed changed to {val}")
+            else:
+                speak(f"Sorry, I couldn't understand the speed value. Please say a number between 0.5 and 3.")
+
+        elif action == "set_volume":
+            val = _parse_number_from_text(query)
+            if val is not None:
+                val = int(val)
+                val = max(0, min(100, val))
+                try:
+                    subprocess.run(
+                        ['powershell', '-Command',
+                         f'(New-Object -ComObject WScript.Shell).SendKeys([char]173); '
+                         f'$wshell = New-Object -ComObject WScript.Shell; '
+                         f'1..50 | ForEach-Object {{ $wshell.SendKeys([char]174) }}; '
+                         f'1..{val // 2} | ForEach-Object {{ $wshell.SendKeys([char]175) }}'],
+                        timeout=15, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                    speak(f"Volume set to approximately {val} percent")
+                except Exception as e:
+                    logger.error(f"Volume set failed: {e}")
+                    speak("Sorry, I couldn't adjust the volume.")
+            else:
+                speak("Please say a volume level between 0 and 100.")
+
+        elif action == "set_brightness":
+            val = _parse_number_from_text(query)
+            if val is not None:
+                val = int(val)
+                val = max(0, min(100, val))
+                try:
+                    subprocess.run(
+                        ['powershell', '-Command',
+                         f'(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,{val})'],
+                        timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                    speak(f"Brightness set to {val} percent")
+                except Exception as e:
+                    logger.error(f"Brightness set failed: {e}")
+                    speak("Sorry, I couldn't adjust the brightness. This may not work on desktop monitors.")
+            else:
+                speak("Please say a brightness level between 0 and 100.")
+
+        elif action == "close_explorer":
+            self._execute("close_explorer", query, None)
+
+        elif action == "task_view":
+            self._execute("task_view", query, None)
+
+    def _get_active_explorer_window(self):
+        """Find the active or top-most visible File Explorer window and document using Shell.Application."""
+        import win32gui
+        import win32com.client
+        import pythoncom
+        
+        try:
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
+            
+        active_hwnd = win32gui.GetForegroundWindow()
+        is_explorer = False
+        if active_hwnd:
+            class_name = win32gui.GetClassName(active_hwnd)
+            if class_name in ("CabinetWClass", "ExploreWClass"):
+                is_explorer = True
+                
+        # Fallback: Find top-most visible File Explorer window if current foreground is not Explorer
+        if not is_explorer:
+            explorer_hwnds = []
+            def enum_cb(hwnd, extra):
+                if win32gui.IsWindowVisible(hwnd):
+                    cls = win32gui.GetClassName(hwnd)
+                    if cls in ("CabinetWClass", "ExploreWClass"):
+                        explorer_hwnds.append(hwnd)
+            win32gui.EnumWindows(enum_cb, None)
+            
+            if explorer_hwnds:
+                active_hwnd = explorer_hwnds[0]
+                is_explorer = True
+                # Try to bring it to foreground
+                try:
+                    win32gui.ShowWindow(active_hwnd, 5) # SW_SHOW
+                    win32gui.SetForegroundWindow(active_hwnd)
+                except Exception:
+                    pass
+            else:
+                return None, None
+
+        try:
+            active_title = win32gui.GetWindowText(active_hwnd)
+            target_tab_name = None
+            if " - File Explorer" in active_title:
+                tab_part = active_title.split(" - File Explorer")[0]
+                if " and " in tab_part:
+                    right_part = tab_part.split(" and ")[-1]
+                    if "more tab" in right_part:
+                        target_tab_name = tab_part.rsplit(" and ", 1)[0]
+                if not target_tab_name:
+                    target_tab_name = tab_part
+            
+            shell = win32com.client.Dispatch("Shell.Application")
+            windows = shell.Windows()
+            matching_tabs = []
+            for i in range(windows.Count):
+                w = windows.Item(i)
+                try:
+                    if w.hwnd == active_hwnd:
+                        matching_tabs.append(w)
+                except Exception:
+                    continue
+                    
+            if not matching_tabs:
+                return None, None
+                
+            if len(matching_tabs) == 1:
+                return matching_tabs[0], matching_tabs[0].Document
+                
+            if target_tab_name:
+                for w in matching_tabs:
+                    if w.LocationName.lower() == target_tab_name.lower():
+                        return w, w.Document
+                        
+            return matching_tabs[0], matching_tabs[0].Document
+        except Exception as e:
+            logger.error(f"Error in _get_active_explorer_window: {e}")
+            
+        return None, None
+
+    def _select_file_in_explorer(self, pos: str, action: str):
+        """Deterministic COM-based file selection inside active File Explorer."""
+        import pythoncom
+        import time
+        import pyautogui
+        
+        try:
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
+            
+        try:
+            window, doc = self._get_active_explorer_window()
+            if not doc:
+                logger.warning("No active File Explorer window found via COM.")
+                return False
+                
+            folder = doc.Folder
+            items = folder.Items()
+            count = items.Count
+            if count == 0:
+                logger.info("No items in the folder.")
+                return False
+                
+            items_list = [items.Item(i) for i in range(count)]
+            target_idx = -1
+            
+            if pos == "next" or pos == "prev":
+                focused = doc.FocusedItem
+                curr_idx = -1
+                if focused:
+                    focused_path = focused.Path.lower()
+                    for idx, it in enumerate(items_list):
+                        if it.Path.lower() == focused_path:
+                            curr_idx = idx
+                            break
+                            
+                if curr_idx == -1:
+                    target_idx = 0 if pos == "next" else count - 1
+                else:
+                    target_idx = min(count - 1, curr_idx + 1) if pos == "next" else max(0, curr_idx - 1)
+            elif pos == "-1":
+                target_idx = count - 1
+            else:
+                try:
+                    n = int(pos)
+                    target_idx = max(1, min(count, n)) - 1
+                except ValueError:
+                    logger.error(f"Invalid position argument: {pos}")
+                    return False
+                    
+            if 0 <= target_idx < count:
+                target_item = items_list[target_idx]
+                logger.info(f"Selecting item {target_idx}: '{target_item.Name}'")
+                # 1 = SVSI_SELECT, 4 = SVSI_DESELECTOTHERS, 8 = SVSI_ENSUREVISIBLE, 16 = SVSI_FOCUS
+                doc.SelectItem(target_item, 29)
+                time.sleep(0.1)
+                
+                if action == "open":
+                    pyautogui.press('enter')
+                return True
+        except Exception as e:
+            logger.error(f"Error in _select_file_in_explorer: {e}")
+            
+        return False
+
+    def _deselect_items_in_explorer(self, target_type: str = "selected") -> bool:
+        """
+        Deselects item(s) in the active Explorer window using Shell.Application COM interface.
+        If target_type is 'selected', we deselect all currently selected items.
+        If target_type is 'all', we deselect every item.
+        """
+        import pythoncom
+        try:
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
+            
+        try:
+            window, doc = self._get_active_explorer_window()
+            if not doc:
+                logger.warning("No active File Explorer window found via COM.")
+                return False
+                
+            if target_type == "selected":
+                selected_items = doc.SelectedItems()
+                for i in range(selected_items.Count):
+                    doc.SelectItem(selected_items.Item(i), 0)  # 0 = deselect
+            else:
+                try:
+                    doc.SelectItem(None, 4)  # 4 = SVSI_DESELECTOTHERS with None deselects all
+                except Exception:
+                    pass
+                # Fallback: deselect any remaining selected items
+                selected_items = doc.SelectedItems()
+                for i in range(selected_items.Count):
+                    try:
+                        doc.SelectItem(selected_items.Item(i), 0)
+                    except Exception:
+                        pass
+            return True
+        except Exception as e:
+            logger.error(f"Error in _deselect_items_in_explorer: {e}")
+        return False
+
     def _execute(self, action_type: str, arg: str, response: str):
         """Execute a predefined action."""
         import pyautogui
@@ -1301,37 +2308,50 @@ class VoiceAssistant(threading.Thread):
 
         elif action_type == "select_nth_file":
             speak(response)
-            # Parse arg: "N_action" where action is "open" or "select"
             parts = arg.split('_')
             pos = parts[0]      # "1", "2", "-1", "next", "prev"
             action = parts[1]   # "open" or "select"
 
-            # Focus the file list using F6 (cycles panes in Explorer)
-            pyautogui.press('F6')
-            time.sleep(0.3)
-            pyautogui.press('F6')
-            time.sleep(0.3)
-
-            if pos == "next":
-                pyautogui.press('down')
-            elif pos == "prev":
-                pyautogui.press('up')
-            elif pos == "-1":
-                pyautogui.press('end')
-            else:
-                n = int(pos)
-                pyautogui.press('home')
-                time.sleep(0.2)
-                for _ in range(n - 1):
-                    pyautogui.press('down')
-                    time.sleep(0.1)
-
-            time.sleep(0.3)
-
-            if action == "open":
-                pyautogui.press('enter')
+            success = self._select_file_in_explorer(pos, action)
+            if not success:
+                logger.warning("COM-based file selection failed, falling back to keyboard sequence.")
+                # Fallback to legacy F6 cycling
+                pyautogui.press('F6')
                 time.sleep(0.3)
-                pyautogui.press('enter')  # Double enter to be sure
+                pyautogui.press('F6')
+                time.sleep(0.3)
+
+                if pos == "next":
+                    pyautogui.press('down')
+                elif pos == "prev":
+                    pyautogui.press('up')
+                elif pos == "-1":
+                    pyautogui.press('end')
+                else:
+                    try:
+                        n = int(pos)
+                        pyautogui.press('home')
+                        time.sleep(0.2)
+                        for _ in range(n - 1):
+                            pyautogui.press('down')
+                            time.sleep(0.1)
+                    except ValueError:
+                        pass
+
+                time.sleep(0.3)
+
+                if action == "open":
+                    pyautogui.press('enter')
+                    time.sleep(0.3)
+                    pyautogui.press('enter')
+
+        elif action_type == "deselect_item":
+            speak(response)
+            success = self._deselect_items_in_explorer(arg)
+            if not success:
+                logger.warning("COM-based deselection failed, falling back to keyboard emulation.")
+                # Keyboard fallback: hit escape to clear selection
+                pyautogui.press('esc')
 
         elif action_type == "scroll":
             speak(response)
@@ -1348,8 +2368,6 @@ class VoiceAssistant(threading.Thread):
                 pyautogui.hscroll(amount)
 
         elif action_type == "nav":
-            import urllib.request
-            import urllib.error
             speak(response)
             url = f"http://localhost:7891/{arg}"
             try:
@@ -1360,7 +2378,7 @@ class VoiceAssistant(threading.Thread):
 
         elif action_type == "help":
             speak(
-                "I'm Jim, your voice assistant. Here's what I can do. "
+                "I'm Jack, your voice assistant. Here's what I can do. "
                 "Say open followed by an app name, like open browser or open calculator. "
                 "Say search for, followed by what you want, to search Google. "
                 "Say find file or open file, to search in file explorer. "
@@ -1371,13 +2389,179 @@ class VoiceAssistant(threading.Thread):
                 "Say click or click here to click at the cursor position. "
                 "Say click first link, click second link to click links on a page. "
                 "I can also take screenshots, switch windows, and control volume. "
-                "Say go to sleep to pause me. Say hey Jim or wake up to activate me again."
+                "Say go to sleep to pause me. Say hey Jack or wake up to activate me again."
             )
+
+        elif action_type == "tell_time":
+            from datetime import datetime
+            now = datetime.now()
+            time_str = now.strftime("%I:%M %p")
+            speak(f"The current time is {time_str}")
+
+        elif action_type == "tell_date":
+            from datetime import datetime
+            now = datetime.now()
+            date_str = now.strftime("%B %d, %Y")
+            speak(f"Today's date is {date_str}")
+
+        elif action_type == "tell_day":
+            from datetime import datetime
+            now = datetime.now()
+            day_str = now.strftime("%A, %B %d, %Y")
+            speak(f"Today is {day_str}")
+
+        elif action_type == "battery":
+            try:
+                import psutil
+                battery = psutil.sensors_battery()
+                if battery:
+                    pct = battery.percent
+                    plugged = "plugged in" if battery.power_plugged else "on battery"
+                    if battery.secsleft > 0 and not battery.power_plugged:
+                        mins = battery.secsleft // 60
+                        hrs = mins // 60
+                        mins = mins % 60
+                        speak(f"Battery is at {pct} percent, {plugged}. About {hrs} hours and {mins} minutes remaining.")
+                    else:
+                        speak(f"Battery is at {pct} percent, {plugged}.")
+                else:
+                    speak("I couldn't detect a battery. This might be a desktop computer.")
+            except ImportError:
+                speak("Battery monitoring is not available. The psutil package is required.")
+            except Exception as e:
+                logger.error(f"Battery check failed: {e}")
+                speak("Sorry, I couldn't check the battery status.")
+
+        elif action_type == "power":
+            if arg == "shutdown":
+                speak(response)
+                try:
+                    subprocess.Popen("shutdown /s /t 10", shell=True)
+                except Exception as e:
+                    logger.error(f"Shutdown failed: {e}")
+            elif arg == "restart":
+                speak(response)
+                try:
+                    subprocess.Popen("shutdown /r /t 10", shell=True)
+                except Exception as e:
+                    logger.error(f"Restart failed: {e}")
+            elif arg == "sleep_pc":
+                speak(response)
+                try:
+                    subprocess.Popen("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
+                except Exception as e:
+                    logger.error(f"Sleep failed: {e}")
+            elif arg == "cancel":
+                speak(response)
+                try:
+                    subprocess.Popen("shutdown /a", shell=True)
+                except Exception as e:
+                    logger.error(f"Cancel shutdown failed: {e}")
+
+        elif action_type == "wifi":
+            speak(response)
+            state = "enabled" if arg == "on" else "disabled"
+            try:
+                subprocess.run(
+                    f'netsh interface set interface "Wi-Fi" {state}',
+                    shell=True, timeout=10,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+            except Exception as e:
+                logger.error(f"Wi-Fi toggle failed: {e}")
+                speak(f"Sorry, I couldn't turn {'on' if arg == 'on' else 'off'} the Wi-Fi.")
+
+        elif action_type == "list_wifi":
+            speak("Scanning for Wi-Fi networks...")
+            try:
+                result = subprocess.run(
+                    'netsh wlan show networks',
+                    shell=True, capture_output=True, text=True, timeout=10
+                )
+                networks = []
+                for line in result.stdout.splitlines():
+                    line = line.strip()
+                    if line.startswith('SSID') and ':' in line:
+                        ssid = line.split(':', 1)[1].strip()
+                        if ssid:
+                            networks.append(ssid)
+
+                if networks:
+                    # Deduplicate while preserving order
+                    seen = set()
+                    unique = []
+                    for n in networks:
+                        if n.lower() not in seen:
+                            seen.add(n.lower())
+                            unique.append(n)
+
+                    count = len(unique)
+                    if count <= 5:
+                        names = ", ".join(unique)
+                        speak(f"I found {count} networks: {names}. Say connect to wifi followed by the network name to connect.")
+                    else:
+                        top5 = ", ".join(unique[:5])
+                        speak(f"I found {count} networks. The top ones are: {top5}. Say connect to wifi followed by the network name.")
+                    logger.info(f"  Wi-Fi scan found {count} networks: {unique}")
+                else:
+                    speak("I couldn't find any Wi-Fi networks. Make sure Wi-Fi is enabled.")
+            except Exception as e:
+                logger.error(f"Wi-Fi scan failed: {e}")
+                speak("Sorry, I couldn't scan for Wi-Fi networks.")
+
+        elif action_type == "disconnect_wifi":
+            speak(response)
+            try:
+                result = subprocess.run(
+                    'netsh wlan disconnect',
+                    shell=True, capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0:
+                    logger.info("  ✓ Disconnected from Wi-Fi")
+                else:
+                    speak("I couldn't disconnect. You may not be connected to any network.")
+            except Exception as e:
+                logger.error(f"Wi-Fi disconnect failed: {e}")
+                speak("Sorry, I couldn't disconnect from Wi-Fi.")
+
+        elif action_type == "brightness":
+            speak(response)
+            try:
+                if arg == "max":
+                    level = 100
+                elif arg == "min":
+                    level = 10
+                elif arg == "up":
+                    level = None  # Will increase by 20
+                elif arg == "down":
+                    level = None  # Will decrease by 20
+                else:
+                    level = 50
+
+                if level is not None:
+                    subprocess.run(
+                        ['powershell', '-Command',
+                         f'(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,{level})'],
+                        timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                else:
+                    # Get current brightness and adjust
+                    delta = 20 if arg == "up" else -20
+                    subprocess.run(
+                        ['powershell', '-Command',
+                         f'$b = (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness; '
+                         f'$n = [Math]::Max(0, [Math]::Min(100, $b + {delta})); '
+                         f'(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,$n)'],
+                        timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+            except Exception as e:
+                logger.error(f"Brightness control failed: {e}")
+                speak("Sorry, I couldn't adjust the brightness.")
 
         elif action_type == "sleep":
             speak(response)
             self._state = STATE_SLEEPING
-            logger.info("  Jim entering sleep mode")
+            logger.info("  Jack entering sleep mode")
 
         elif action_type == "stop_assistant":
             speak(response)
@@ -1475,6 +2659,228 @@ class VoiceAssistant(threading.Thread):
             else:
                 speak("Gaze tracking is not running.")
 
+        elif action_type == "take_screenshot":
+            speak(response)
+            try:
+                pic_dir = os.path.join(os.path.expanduser("~"), "Pictures")
+                if not os.path.exists(pic_dir):
+                    os.makedirs(pic_dir, exist_ok=True)
+                path = os.path.join(pic_dir, f"Screenshot_{int(time.time())}.png")
+                pyautogui.screenshot(path)
+                logger.info(f"  Screenshot saved to {path}")
+                speak("Screenshot taken and saved to Pictures folder")
+            except Exception as e:
+                logger.error(f"Screenshot failed: {e}")
+                speak("Sorry, I could not capture the screen.")
+
+        elif action_type == "lock_pc":
+            speak(response)
+            try:
+                subprocess.Popen("rundll32.exe user32.dll,LockWorkStation", shell=True)
+            except Exception as e:
+                logger.error(f"Lock PC failed: {e}")
+                speak("Sorry, I could not lock the computer.")
+
+        elif action_type == "mute_unmute":
+            speak(response)
+            try:
+                pyautogui.press('volumemute')
+            except Exception as e:
+                logger.error(f"Mute/Unmute failed: {e}")
+
+        elif action_type == "minimize_all":
+            speak(response)
+            try:
+                pyautogui.hotkey('win', 'd')
+            except Exception as e:
+                logger.error(f"Minimize all failed: {e}")
+
+        elif action_type == "maximize":
+            speak(response)
+            try:
+                pyautogui.hotkey('win', 'up')
+            except Exception as e:
+                logger.error(f"Maximize failed: {e}")
+
+        elif action_type == "open_drive":
+            speak(response)
+            try:
+                subprocess.Popen(f'explorer "{arg}"', shell=True)
+            except Exception as e:
+                logger.error(f"Open drive failed: {e}")
+                speak(f"Sorry, I couldn't open drive {arg}")
+
+        elif action_type == "open_custom_folder":
+            folder_name = arg.lower().strip()
+            
+            # Check drive letter
+            import re
+            drive_match = re.match(r'^(local disk|disk|drive)?\s*([a-z])\s*(disk|drive)?$', folder_name)
+            if drive_match:
+                letter = drive_match.group(2).upper()
+                path = f"{letter}:\\"
+                if os.path.exists(path):
+                    speak(f"Opening drive {letter}")
+                    subprocess.Popen(f'explorer "{path}"', shell=True)
+                    return
+            
+            # Check standard folders
+            standards = {
+                "downloads": "Downloads",
+                "download": "Downloads",
+                "documents": "Documents",
+                "document": "Documents",
+                "pictures": "Pictures",
+                "picture": "Pictures",
+                "music": "Music",
+                "videos": "Videos",
+                "video": "Videos",
+                "desktop": "Desktop"
+            }
+            if folder_name in standards:
+                target = standards[folder_name]
+                path = os.path.join(os.path.expanduser("~"), target)
+                if os.path.exists(path):
+                    speak(f"Opening {target} folder")
+                    subprocess.Popen(f'explorer "{path}"', shell=True)
+                    return
+            
+            # Check user profile subdirectories
+            user_profile = os.path.expanduser("~")
+            found_dir = None
+            try:
+                for item in os.listdir(user_profile):
+                    item_path = os.path.join(user_profile, item)
+                    if os.path.isdir(item_path) and item.lower() == folder_name:
+                        found_dir = item_path
+                        break
+            except Exception:
+                pass
+                
+            if found_dir:
+                speak(f"Opening folder {os.path.basename(found_dir)}")
+                subprocess.Popen(f'explorer "{found_dir}"', shell=True)
+            else:
+                speak(f"Searching for folder {arg}")
+                subprocess.Popen(f'explorer /root,"search-ms:query={arg}&crumb=kind:folder"', shell=True)
+
+        elif action_type == "close_properties":
+            speak(response)
+            try:
+                import win32gui
+                import win32con
+                
+                def enum_cb(hwnd, extra):
+                    title = win32gui.GetWindowText(hwnd)
+                    class_name = win32gui.GetClassName(hwnd)
+                    if "properties" in title.lower() and class_name == "#32770":
+                        logger.info(f"Closing properties window: '{title}' (HWND: {hwnd})")
+                        win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+                
+                win32gui.EnumWindows(enum_cb, None)
+            except Exception as e:
+                logger.error(f"Failed to close properties window: {e}")
+
+        elif action_type == "close_explorer":
+            if response:
+                speak(response)
+            target_type = arg.strip() if arg else "active"
+            try:
+                import pythoncom
+                import win32com.client
+                import win32gui
+                import win32con
+                
+                try:
+                    pythoncom.CoInitialize()
+                except Exception:
+                    pass
+                
+                shell = win32com.client.Dispatch("Shell.Application")
+                windows = shell.Windows()
+                
+                if target_type == "active":
+                    active_hwnd = win32gui.GetForegroundWindow()
+                    if active_hwnd:
+                        class_name = win32gui.GetClassName(active_hwnd)
+                        if class_name in ("CabinetWClass", "ExploreWClass"):
+                            win32gui.PostMessage(active_hwnd, win32con.WM_CLOSE, 0, 0)
+                            logger.info("  ✓ Closed active File Explorer window.")
+                elif target_type == "all":
+                    count = 0
+                    for i in range(windows.Count):
+                        w = windows.Item(i)
+                        try:
+                            class_name = win32gui.GetClassName(w.hwnd)
+                            if class_name in ("CabinetWClass", "ExploreWClass"):
+                                w.Quit()
+                                count += 1
+                        except Exception:
+                            pass
+                    logger.info(f"  ✓ Closed {count} File Explorer window(s).")
+                elif target_type.startswith("drive:"):
+                    letter = target_type.split(":", 1)[1].upper()
+                    count = 0
+                    for i in range(windows.Count):
+                        w = windows.Item(i)
+                        try:
+                            path = w.Document.Folder.Self.Path
+                            if path.upper().startswith(letter + ":"):
+                                w.Quit()
+                                count += 1
+                        except Exception:
+                            try:
+                                if letter in w.LocationName.upper() or letter in w.LocationURL.upper():
+                                    w.Quit()
+                                    count += 1
+                            except Exception:
+                                pass
+                    logger.info(f"  ✓ Closed {count} File Explorer window(s) matching drive {letter}.")
+                elif target_type.startswith("folder:"):
+                    folder_name = target_type.split(":", 1)[1].lower()
+                    count = 0
+                    for i in range(windows.Count):
+                        w = windows.Item(i)
+                        try:
+                            path = w.Document.Folder.Self.Path
+                            if os.path.basename(path).lower() == folder_name or folder_name in path.lower():
+                                w.Quit()
+                                count += 1
+                        except Exception:
+                            try:
+                                if folder_name in w.LocationName.lower():
+                                    w.Quit()
+                                    count += 1
+                            except Exception:
+                                pass
+                    logger.info(f"  ✓ Closed {count} File Explorer window(s) matching folder '{folder_name}'.")
+            except Exception as e:
+                logger.error(f"Failed to close explorer windows: {e}")
+
+        elif action_type == "task_view":
+            if response:
+                speak(response)
+            sub_action = arg.strip().lower() if arg else "open"
+            try:
+                import pyautogui
+                if sub_action == "open":
+                    pyautogui.hotkey('win', 'tab')
+                elif sub_action == "close":
+                    pyautogui.press('escape')
+                elif sub_action == "select":
+                    pyautogui.press('enter')
+                elif sub_action == "next":
+                    pyautogui.press('right')
+                elif sub_action == "prev":
+                    pyautogui.press('left')
+                elif sub_action == "up":
+                    pyautogui.press('up')
+                elif sub_action == "down":
+                    pyautogui.press('down')
+            except Exception as e:
+                logger.error(f"Task view action '{sub_action}' failed: {e}")
+
+
 
 # ──────────────────────────────────────────────
 # ENTRY POINT
@@ -1482,7 +2888,7 @@ class VoiceAssistant(threading.Thread):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Jim -- Interactive Voice Assistant"
+        description="Jack -- Interactive Voice Assistant"
     )
     parser.add_argument("--no-attention", action="store_true",
                         help="Disable attention gating (always listen)")
@@ -1493,7 +2899,7 @@ def main():
     )
     assistant.start()
 
-    logger.info("Jim assistant running. Press Ctrl+C to stop.")
+    logger.info("Jack assistant running. Press Ctrl+C to stop.")
     try:
         while assistant.is_alive():
             time.sleep(0.5)
