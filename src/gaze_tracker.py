@@ -20,6 +20,10 @@ import threading
 import time
 import urllib.request
 
+# Suppress MediaPipe and TensorFlow C++ warnings/errors/telemetry logs
+os.environ['GLOG_minloglevel'] = '3'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
 import cv2
 import numpy as np
 import pyautogui
@@ -266,11 +270,13 @@ class GazeTracker(threading.Thread):
  
                 # ── Calculate gaze from iris position ──
                 # Freeze cursor when a blink/wink gesture is in progress
-                # to prevent iris landmark jitter from dragging the cursor
-                if is_attentive and not self._gesture_active:
+                # UNLESS we're in drag/hold mode (user needs to steer the drag)
+                cursor_frozen = self._gesture_active and not self._is_holding
+                if is_attentive and not cursor_frozen:
                     gx, gy = self._calc_gaze(lm)
                     self._update_cursor(gx, gy)
-                else:
+
+                if not is_attentive:
                     # Log diagnostics every 15 frames (approx 0.5s) to avoid spamming
                     if not hasattr(self, '_diag_counter'):
                         self._diag_counter = 0
@@ -405,9 +411,11 @@ class GazeTracker(threading.Thread):
         r_confirmed_open   = self._r_open_frames   >= self._MIN_OPEN_FRAMES
         both_confirmed_closed = l_confirmed_closed and r_confirmed_closed
 
-        # ── Freeze cursor whenever any eye is closing (prevents drift) ──
-        any_eye_closing = l_confirmed_closed or r_confirmed_closed
-        if any_eye_closing:
+        # ── Freeze cursor as soon as any eye STARTS closing (prevents drift) ──
+        # Use raw EAR threshold instead of waiting for confirmed-closed (3 frames)
+        # to freeze the cursor BEFORE iris landmarks shift and cause drift
+        any_eye_dropping = (l_ear < self._l_closed_thresh) or (r_ear < self._r_closed_thresh)
+        if any_eye_dropping:
             self._gesture_active = True
         elif l_confirmed_open and r_confirmed_open:
             # Only unfreeze when BOTH eyes are confirmed back open
@@ -429,7 +437,7 @@ class GazeTracker(threading.Thread):
 
         if not both_confirmed_closed and self._both_confirmed_closed:
             # Rising edge: eyes coming back open
-            if l_confirmed_open and r_confirmed_open:
+            if l_ear > self._l_open_thresh and r_ear > self._r_open_thresh:
                 # Full blink cycle complete
                 self._both_confirmed_closed     = False
                 self._eyes_reopened_after_blink = True
@@ -448,8 +456,8 @@ class GazeTracker(threading.Thread):
 
         # ── Wink detection (only when it is NOT a full blink) ──
         if not both_closed:
-            # Left wink candidate: left confirmed-closed, right eye open
-            if l_confirmed_closed and r_ear > self._r_open_thresh:
+            # Left wink candidate: left confirmed-closed, right eye confirmed-open
+            if l_confirmed_closed and r_confirmed_open:
                 self._l_wink_candidate = True
                 self._l_wink_closed_count += 1
 
@@ -465,8 +473,8 @@ class GazeTracker(threading.Thread):
                 if not l_confirmed_closed:
                     self._l_wink_closed_count = 0
 
-            # Right wink candidate: right confirmed-closed, left eye open
-            if r_confirmed_closed and l_ear > self._l_open_thresh:
+            # Right wink candidate: right confirmed-closed, left eye confirmed-open
+            if r_confirmed_closed and l_confirmed_open:
                 self._r_wink_candidate = True
                 self._r_wink_closed_count += 1
 

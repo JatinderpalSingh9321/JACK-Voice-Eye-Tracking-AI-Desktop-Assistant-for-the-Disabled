@@ -58,3 +58,15 @@ data/models/*.pkl
 models/kokoro/
 *.onnx
 *.bin
+
+# Large zip packages
+payload.zip
+
+# Built releases
+release/
+
+# Local logs and user settings/calibrations
+gaze_logs.txt
+import_log.txt
+import_times.txt
+wake_calibration.json

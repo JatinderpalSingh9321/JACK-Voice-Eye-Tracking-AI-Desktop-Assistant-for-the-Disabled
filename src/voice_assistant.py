@@ -32,6 +32,7 @@ Group No. 7 | 8th Semester Major Project
 import argparse
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -519,7 +520,7 @@ VOICE_COMMANDS = {
     "close popup":          ("hotkey", "escape", "Closing popup"),
     "close menu":           ("hotkey", "escape", "Closing menu"),
     "close this":           ("hotkey", "alt+F4", "Closing this"),
-    "close it":             ("hotkey", "escape", "Closing it"),
+    "close it":             ("hotkey", "alt+F4", "Closing active window"),
     "dismiss":              ("hotkey", "escape", "Dismissed"),
     "cancel":               ("hotkey", "escape", "Cancelled"),
     "escape":               ("hotkey", "escape", "Escape"),
@@ -823,6 +824,11 @@ DYNAMIC_PREFIXES = [
     ("do a calculation of",   "calculate"),
     ("calculate",             "calculate"),
     ("do calculation of",      "calculate"),
+    ("do ",                   "calculate"),
+    ("what is ",              "calculate"),
+    ("how much is ",          "calculate"),
+    ("solve ",                "calculate"),
+    ("evaluate ",             "calculate"),
     ("set sensitivity to ",   "set_sensitivity"),
     ("set the sensitivity to ","set_sensitivity"),
     ("adjust sensitivity to ","set_sensitivity"),
@@ -984,6 +990,14 @@ WAKE_PHRASES = frozenset({
     "yo jack", "a jack",
 })
 
+# Compile a combined regex for all wake phrases with word boundaries to prevent
+# false matches on substrings (e.g. "hijack" triggering "jack" or "jacket" triggering "jack")
+import re
+_sorted_wake_phrases = sorted(list(WAKE_PHRASES), key=len, reverse=True)
+_wake_pattern = r'\b(' + '|'.join(re.escape(p) for p in _sorted_wake_phrases) + r')\b'
+WAKE_REGEX = re.compile(_wake_pattern, re.IGNORECASE)
+
+
 STATE_IDLE      = "idle"
 STATE_LISTENING = "listening"
 STATE_SLEEPING  = "sleeping"
@@ -994,7 +1008,7 @@ def _contains_wake(text: str) -> bool:
 
     Uses a three-tier strategy:
       1. Exact full-string match against frozenset  (fastest)
-      2. Substring scan for each known phrase        (catches embedded wake words)
+      2. Word-boundary regex search for any wake phrase
       3. Fuzzy word-level match                      (catches unknown combos)
     """
     cleaned = text.lower().strip().strip('.?!,;:-_`"\'')
@@ -1003,10 +1017,9 @@ def _contains_wake(text: str) -> bool:
     if cleaned in WAKE_PHRASES:
         return True
 
-    # Tier 2: substring containment (handles "um wake up jim please")
-    for phrase in WAKE_PHRASES:
-        if len(phrase) > 2 and phrase in cleaned:
-            return True
+    # Tier 2: word-boundary regex search (handles "um wake up jim please" but avoids "hijack" or "jacket" matching "jack")
+    if WAKE_REGEX.search(cleaned):
+        return True
 
     # Tier 3: fuzzy word-level — any Jim-sound + any trigger word
     words = set(cleaned.split())
@@ -1080,7 +1093,13 @@ def _parse_number_from_text(text: str):
         "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
         "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
         "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
-        "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90
+        "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+        # Homophones for numbers (extremely common in voice transcription)
+        "to": 2, "too": 2,
+        "for": 4, "fore": 4,
+        "won": 1,
+        "ate": 8,
+        "free": 3
     }
     
     multipliers = {
@@ -1457,8 +1476,8 @@ class VoiceAssistant(threading.Thread):
         # 2b. Dynamic select/open nth file/folder/item parser
         # Matches: "select the fifth folder", "select the last folder", "open folder 3", "select folder number 5", etc.
         import re
-        pattern1 = r'^(select|open)\s+(?:the\s+)?(\w+|\d+)(?:st|nd|rd|th)?\s+(folder|file|item)$'
-        pattern2 = r'^(select|open)\s+(?:the\s+)?(folder|file|item)\s+(?:number\s+)?(\w+|\d+)$'
+        pattern1 = r'^(select|open)\s+(?:the\s+)?(\w+|\d+)(?:st|nd|rd|th)?\s+(folder|file|item|one)$'
+        pattern2 = r'^(select|open)\s+(?:the\s+)?(folder|file|item|one)\s+(?:number\s+)?(\w+|\d+)$'
         
         m1 = re.match(pattern1, clean_text)
         m2 = re.match(pattern2, clean_text)
@@ -1472,7 +1491,7 @@ class VoiceAssistant(threading.Thread):
             "first": 1, "1st": 1,
             "second": 2, "2nd": 2,
             "third": 3, "3rd": 3,
-            "fourth": 4, "4th": 4,
+            "fourth": 4, "4th": 4, "forth": 4,
             "fifth": 5, "5th": 5,
             "sixth": 6, "6th": 6,
             "seventh": 7, "7th": 7,
@@ -1516,8 +1535,9 @@ class VoiceAssistant(threading.Thread):
                     matched = True
                     
         if matched and n is not None:
+            display_item_type = "item" if item_type == "one" else item_type
             label = "last" if n == -1 else str(n)
-            resp = f"{'Opening' if action == 'open' else 'Selecting'} {item_type} {label}"
+            resp = f"{'Opening' if action == 'open' else 'Selecting'} {display_item_type} {label}"
             self._execute("select_nth_file", f"{n}_{action}", resp)
             return
 
@@ -1774,6 +1794,14 @@ class VoiceAssistant(threading.Thread):
                 expr = expr.replace("in calculator", "").strip()
                 on_calc = True
 
+            # If multiplication words are present, "and" should mean multiplication (*) instead of addition (+)
+            if any(w in expr for w in ["multiplication", "product"]):
+                expr = expr.replace("and", "*")
+            elif any(w in expr for w in ["division", "ratio"]):
+                expr = expr.replace("and", "/")
+            elif any(w in expr for w in ["subtraction", "difference"]):
+                expr = expr.replace("and", "-")
+
             # Word replacements for spoken math operators
             word_map = {
                 "plus": "+", "and": "+",
@@ -1794,9 +1822,6 @@ class VoiceAssistant(threading.Thread):
                     result = eval(expr_cleaned, {"__builtins__": None}, {})
                     if isinstance(result, float) and result.is_integer():
                         result = int(result)
-                    
-                    spoken_expr = expr_cleaned.replace("*", " times ").replace("/", " divided by ")
-                    speak(f"The result of {spoken_expr} is {result}")
                     
                     if on_calc:
                         # Focus existing calculator window if open; do not spawn a new window if one exists.
@@ -1826,6 +1851,9 @@ class VoiceAssistant(threading.Thread):
                             time.sleep(0.8) # Wait for it to focus
 
                         pyautogui.write(f"{expr_cleaned}=", interval=0.05)
+
+                    spoken_expr = expr_cleaned.replace("*", " times ").replace("/", " divided by ")
+                    speak(f"The result of {spoken_expr} is {result}")
                 else:
                     speak("Sorry, I could not extract a valid mathematical expression.")
             except Exception as e:
