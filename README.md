@@ -226,7 +226,7 @@ python -m src.gui_app
 ```
 
 The dashboard includes:
-- **🎙️ Voice Assistant tab** — Start/Stop Jim, enable Attention Gating.
+- **🎙️ Voice Assistant tab** — Start/Stop Jack, enable Attention Gating.
 - **👁️ Gaze Tracker tab** — Configure camera index, EMA smoothing, toggle live preview.
 - **⚙️ General Settings tab** — Select voice profile, speaking speed, microphone sensitivity.
 
@@ -277,7 +277,7 @@ If **Attention Gating** is enabled:
 
 ## 🎙️ Voice Assistant Reference Guide
 
-Jim listens for the wake phrase **"hey Jack"**. Once activated, speak any of the following command classes:
+Jack listens for the wake phrase **"hey Jack"**. Once activated, speak any of the following command classes:
 
 ### Browser & Tab Navigation
 | Command | Action |
@@ -353,7 +353,7 @@ Jim listens for the wake phrase **"hey Jack"**. Once activated, speak any of the
 | **Jittery cursor** | Low room lighting or low camera FPS | Increase ambient lighting; increase gaze `SMOOTHING` value (e.g., `0.9`) in the Gaze Tracker settings tab. |
 | **Blinks not clicking** | Face landmark model file is missing | Ensure `data/face_landmarker.task` is present. Run `install.bat` or download manually. |
 | **Voice command lag** | High ambient microphone noise | Move to a quieter area or raise `Microphone Sensitivity` in General Settings. |
-| **Jim not waking up** | Energy threshold too high | Lower `Microphone Sensitivity` in the General Settings tab (try 150–250). |
+| **Jack not waking up** | Energy threshold too high | Lower `Microphone Sensitivity` in the General Settings tab (try 150–250). |
 | **Kokoro TTS unavailable** | Model weights missing or not installed | System auto-falls back to Windows SAPI5. Run `python scripts/download_kokoro.py` to install Kokoro. |
 | **Orb not appearing** | PyQt5/QWebEngine not installed | Run `pip install PyQt5 PyQtWebEngine` or re-run `install.bat`. |
 | **`run.bat` fails** | `.venv` not created | Run `install.bat` first, or create `.venv` manually and install `requirements.txt`. |
