@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">👁️ NavTools: Assistive Gaze Tracking & Voice Assistant</h1>
+  <h1 align="center">👁️ JACK: Voice & Eye-Tracking AI Desktop Assistant for the Disabled</h1>
   <p align="center">
     <strong>A Hands-Free Assistive Control Suite using MediaPipe Gaze Tracking and Offline Voice Command Orchestration</strong>
   </p>
@@ -169,8 +169,8 @@ Simply double-click **`install.bat`**. It will:
 
 1. **Clone the Repository:**
    ```bash
-   git clone https://github.com/JatinderpalSingh9321/Assistant-Project-for-Paralysed-people.git
-   cd Assistant-Project-for-Paralysed-people
+    git clone https://github.com/JatinderpalSingh9321/JACK-Voice-Eye-Tracking-AI-Desktop-Assistant-for-the-Disabled.git
+    cd JACK-Voice-Eye-Tracking-AI-Desktop-Assistant-for-the-Disabled
    ```
 
 2. **Set Up Virtual Environment:**
@@ -347,7 +347,7 @@ Jim listens for the wake phrase **"wake up Jim"** or **"hey Jim"**. Once activat
 ## 📂 Project Structure
 
 ```
-Assistant-Project-for-Paralysed-people/
+JACK-Voice-Eye-Tracking-AI-Desktop-Assistant-for-the-Disabled/
 ├── src/
 │   ├── gui_app.py              # Main app: PyQt5 Orb + Tkinter Dashboard
 │   ├── voice_assistant.py      # Jim: 120+ voice commands, Kokoro/SAPI5 TTS
